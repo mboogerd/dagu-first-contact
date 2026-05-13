@@ -27,16 +27,18 @@ These are the immutable constraints. Every design decision must respect them; de
 
 ### 2.1 Layers
 
-The pipeline has five layers plus a discovery artifact. Each layer is a directory; each is produced by one stage; none is mutated by downstream stages.
+The pipeline has five layers plus two intermediate artifacts. Each layer is a directory; each is produced by one stage; none is mutated by downstream stages.
 
-| # | Layer        | Directory       | Produced by stage  | Contents                                                  |
-|---|--------------|-----------------|--------------------|-----------------------------------------------------------|
-| 1 | Evidence     | `evidence/`     | Ingest             | Raw artifacts pulled from source, organized by source type |
-| 2 | Normalized   | `normalized/`   | Ingest             | Uniform `{markdown + frontmatter}` view of every artifact  |
-| — | Taxonomy     | `taxonomy/`     | Taxonomy Discovery | Discovery iterations + the locked taxonomy that Extract consumes |
-| 3 | Extracted    | `extracted/`    | Extract            | Structured JSON extractions per document                   |
-| 4 | Clusters     | `clusters/`     | Cluster            | Emergent organization; summaries; membership               |
-| 5 | Consolidated | inside clusters | Consolidate        | Conflict-resolved requirements and review queue            |
+| # | Layer            | Directory         | Produced by stage              | Contents                                                  |
+|---|------------------|-------------------|--------------------------------|-----------------------------------------------------------|
+| 1 | Evidence         | `evidence/`       | Ingest                         | Raw artifacts pulled from source, organized by source type |
+| 2 | Normalized       | `normalized/`     | Ingest                         | Uniform `{markdown + frontmatter}` view of every artifact  |
+| — | Taxonomy         | `taxonomy/`       | Taxonomy Discovery             | Discovery iterations + the locked taxonomy that Extract consumes |
+| 3 | Extracted        | `extracted/`      | Extract                        | Structured JSON extractions per document                   |
+| 4 | Clusters         | `clusters/`       | Cluster                        | Emergent organization; summaries; membership               |
+| 5 | Consolidated     | inside clusters   | Consolidate                    | Conflict-resolved requirements and review queue            |
+| — | Cross-cluster    | `cross_cluster/`  | Cross-cluster Reconciliation   | Cross-cluster conflict candidates and verified conflicts   |
+| — | Reports          | `reports/`        | Report                         | Timestamped, consultant-facing first-read markdown reports |
 
 Plus two cross-cutting:
 - `cache/` — LLM call cache, keyed by content hash. Committed to git.
@@ -53,6 +55,8 @@ assessment/
 │   ├── taxonomy.locked.yaml      # locked taxonomy produced by Stage 1.5
 │   ├── clustering.yaml           # embedding model, threshold, HDBSCAN params, seed
 │   ├── eval.yaml                 # judge model pin, per-extractor thresholds
+│   ├── consolidation.yaml        # source authorities, confidence weights, scoring params
+│   ├── report.yaml               # top-N size, freshness thresholds, section toggles
 │   ├── evals/                    # eval sets, one directory per LLM-driven step
 │   │   ├── summarize_repo/
 │   │   │   ├── cases/<case_id>.yaml
@@ -61,17 +65,25 @@ assessment/
 │   │   ├── extract_requirements/
 │   │   ├── extract_interactions/
 │   │   └── extract_domains/
+│   ├── calibration/              # consolidated-scoring calibration set + runs
+│   │   ├── cases/<case_id>.yaml  # hand-assigned target priorities
+│   │   ├── runs/<run_id>.json    # tuning + judge results
+│   │   └── tuned_weights.yaml    # output of the tuning command (consumed by consolidation)
 │   └── prompts/                  # versioned prompt templates
 │       ├── summarize_repo.md
 │       ├── discover_taxonomy.md
 │       ├── extract_requirements.md
 │       ├── extract_interactions.md
 │       ├── extract_domains.md
+│       ├── group_requirements.md
+│       ├── reconcile_group.md
+│       ├── assess_criticality.md
+│       ├── verify_cross_cluster_conflict.md
 │       ├── label_cluster.md
-│       ├── consolidate.md
-│       └── judges/               # judge prompts (one per extractor that uses LLM-as-judge)
+│       └── judges/               # judge prompts (LLM-as-judge for evals and calibration)
 │           ├── judge_summarize_repo.md
-│           └── judge_extract_requirements.md
+│           ├── judge_extract_requirements.md
+│           └── judge_calibration.md
 │
 ├── models/                       # vendored model artifacts for reproducibility
 │   └── embeddings/
@@ -88,6 +100,13 @@ assessment/
 │   └── <source_type>/
 │       ├── <source_id>.md                  # the normalized document
 │       └── <source_id>.embedding.json      # sidecar embedding (cached on content_hash)
+│
+├── cross_cluster/                # STAGE 4.5: cross-cluster reconciliation outputs
+│   ├── candidates.json           # candidate pairs after embedding pre-filtering
+│   └── conflicts.json            # verified cross-cluster conflicts (top-level artifact)
+│
+├── reports/                      # STAGE 5.5: timestamped consultant-facing reports
+│   └── <ISO_timestamp>.md        # one report per `report` invocation; never overwritten
 │
 ├── taxonomy/                     # STAGE 1.5: discovery iterations + proposal
 │   ├── iterations/
@@ -109,7 +128,8 @@ assessment/
 │       ├── members.yaml          # normalized doc IDs in this cluster
 │       ├── consolidated/         # LAYER 5: lives inside clusters
 │       │   ├── requirements.json
-│       │   └── review_queue.json
+│       │   ├── review_queue.json
+│       │   └── cross_cluster_annotations.json  # sidecar: links to cross_cluster/conflicts.json
 │       └── <sub-cluster>/...
 │
 ├── cache/                        # LLM call cache (committed)
@@ -493,11 +513,24 @@ reclustering:
   path: clusters/payments-service
   parent: clusters/financial-domain   # null if root
   archived: false
+  archived_at: null                   # ISO timestamp when archived: true was set; null otherwise
+  archived_at_versions:                # captured at archival time; null otherwise; see [D-49]
+    consolidation_config: null         # config/consolidation.yaml version at archive time
+    clustering_config: null            # config/clustering.yaml version at archive time
+    taxonomy: null                     # config/taxonomy.locked.yaml version at archive time
   member_count: 47
   summary_hash: <hash of summary inputs>   # cache key
   seeded_from: git:payments-service        # provenance of cluster creation
   origin: seed | orphan                    # seed = git-derived; orphan = HDBSCAN-discovered
 ```
+
+**Archival semantics ([D-49] through [D-52]):**
+- `archived: true` is set manually by the consultant editing `_index.yaml`. No automation.
+- When transitioning from `false` to `true`, the consultant SHOULD populate `archived_at` and `archived_at_versions` (the spec doesn't enforce, but the report won't render archive-state information cleanly without them).
+- Member docs (listed in `clusters/<name>/members.yaml`) remain members; they are NOT released to the unassigned pool.
+- Cluster files (`summary.md`, `members.yaml`, `consolidated/*.json`, `consolidated/cross_cluster_annotations.json`) remain in place and readable. They are frozen at archive-time state.
+- Stages that produce outputs from clusters (3b labeling, 4 consolidation, 4.5 cross-cluster, 5.5 report's landscape) read the `archived` flag and skip archived clusters per [D-51].
+- Unarchival is just setting `archived: false`; next pipeline run resumes processing. `archived_at_versions` is preserved as historical record of the archival episode.
 
 #### Cluster assignment record (in `clusters/_assignments.json`)
 
@@ -524,40 +557,485 @@ The structural phase's output. Read by phase 3b and downstream stages; written o
 }
 ```
 
-#### ConsolidatedRequirement (in `consolidated/requirements.json`)
+#### Consolidation configuration (in `config/consolidation.yaml`)
+
+All knobs that affect grouping, reconciliation, and scoring live here. Changes invalidate consolidation outputs via the consolidation cache.
+
+```yaml
+version: "<semver or hash>"
+
+grouping:
+  embedding_threshold: 0.78        # cosine; candidates above this enter LLM verification
+  llm_verification: true           # set false to use pure embedding grouping (escape hatch)
+  min_group_size: 1                # singletons (one source) are valid groups
+
+source_authority:
+  # Used in reconciliation tie-breaking and in confidence's authority-weighted-agreement signal.
+  # Values are unitless weights; only relative magnitude matters.
+  rfp: 1.0
+  spreadsheet: 0.7
+  jira: 0.6
+  git: 0.8                         # code is strong evidence of what IS, less so of what SHOULD BE
+  transcript: 0.4
+
+reconciliation:
+  rules:
+    # Applied in order; first match wins.
+    - manual_override                # explicit in config/consolidation_overrides/<group_id>.yaml
+    - source_authority               # higher weight wins
+    - recency                        # newer source_date wins
+    - llm_judgment                   # fallback; rationale always recorded
+
+confidence:
+  # Weights for the deterministic formula. Tunable via calibration.
+  weights:
+    source_count: 0.20               # log-scaled; more sources = more confidence
+    authority_weighted_agreement: 0.35  # weighted agreement across sources
+    recency_spread_penalty: 0.10     # large spread → less confident
+    statement_similarity: 0.15       # high similarity within group → less interpretation needed
+    conflict_penalty: 0.20           # presence of conflict reduces confidence
+  # Defaults are overridden by config/calibration/tuned_weights.yaml when present.
+
+criticality:
+  # LLM-emitted on a fixed discrete scale.
+  scale: [critical, important, moderate, minor]
+  # Mapping to numeric values used in review_priority computation:
+  numeric:
+    critical: 1.00
+    important: 0.70
+    moderate: 0.40
+    minor: 0.15
+
+review_priority:
+  # The final ordering signal. Formula is tunable but defaults to:
+  formula: "criticality_numeric * (1 - confidence)"
+  # Optional boosters (default off):
+  change_plan_boost: 0.0             # add to priority when requirement.type == change_plan
+  cross_cluster_boost: 0.20          # add to priority when item participates in a cross-cluster conflict; see [D-40]
+
+cross_cluster:
+  enabled: true                      # set false to skip Stage 4.5 entirely (cost-bounded runs)
+  embedding_threshold: 0.85          # conservative; only highly-similar pairs get LLM verification
+  detect_kinds: [contradiction, scope_mismatch]   # only these kinds; status/type/version excluded by [D-41]
+  max_candidate_pairs: 500           # hard cap; if exceeded, halt and surface as a warning
+  min_pair_cluster_distance: 1       # 1 = siblings or unrelated; 0 = same cluster (always excluded)
+```
+
+#### RequirementGroup (intermediate; in `clusters/<cluster>/consolidated/groups.json`)
+
+Persisted between phases so reconciliation and scoring are independently inspectable.
+
+```json
+{
+  "group_id": "<cluster>:<index>",
+  "cluster_path": "clusters/financial-domain/payments-service",
+  "members": [
+    {
+      "requirement_id": "<from extracted/.../requirements.json>",
+      "source_id": "...",
+      "source_type": "jira",
+      "source_date": "2026-02-14",
+      "statement": "...",
+      "type": "functional",
+      "status": "planned"
+    }
+  ],
+  "grouping": {
+    "embedding_similarity_min": 0.81,
+    "embedding_similarity_mean": 0.86,
+    "llm_verified": true,
+    "llm_verdict": "confirm | split | reject",
+    "llm_split_reason": null,
+    "verification_model": "<pinned id>",
+    "verification_prompt_version": "<hash>"
+  }
+}
+```
+
+When the LLM verdict is `split`, one input group produces multiple output groups; when `reject`, the candidate group is dissolved and members fall back to singleton groups.
+
+#### Conflict (embedded in `ConsolidatedRequirement.conflict`)
+
+A group can have zero or more conflicts. Conflicts have explicit kinds.
+
+```json
+{
+  "kind": "contradiction | scope_mismatch | status_disagreement | version_skew | type_disagreement",
+  "description": "<short human-readable summary>",
+  "evidence": [
+    {"requirement_id": "...", "excerpt": "<verbatim>", "stance": "must support X"},
+    {"requirement_id": "...", "excerpt": "<verbatim>", "stance": "must not support X"}
+  ],
+  "detected_by": "deterministic | llm | both",
+  "resolution": {
+    "applied_rule": "manual_override | source_authority | recency | llm_judgment",
+    "rationale": "<human-readable explanation>",
+    "rationale_by": {"model": "...", "prompt_version": "..."}
+  }
+}
+```
+
+**Conflict kinds:**
+- `contradiction` — Two sources directly disagree on what the system must (not) do. Detectable by LLM; sometimes by negation patterns.
+- `scope_mismatch` — Sources agree on the behavior but disagree on scope ("all customers" vs "EU customers"). Detectable by LLM.
+- `status_disagreement` — Sources disagree on implementation status (code shows implemented; backlog has it as planned). Detectable deterministically from `status` fields.
+- `version_skew` — Same requirement at different times with semantically different content (recency-driven). Detectable deterministically from `source_date` spread + LLM verification.
+- `type_disagreement` — Sources classify the same requirement differently (functional vs constraint). Detectable deterministically from `type` fields.
+
+#### Confidence (embedded in `ConsolidatedRequirement.confidence`)
+
+```json
+{
+  "score": 0.62,
+  "signals": {
+    "source_count": 4,
+    "authority_weighted_agreement": 0.78,
+    "recency_spread_days": 412,
+    "recency_spread_penalty": 0.10,
+    "statement_similarity": 0.74,
+    "conflict_present": true,
+    "conflict_penalty": 0.20
+  },
+  "weights_version": "<config/calibration/tuned_weights.yaml version or 'defaults'>",
+  "formula_version": "<config/consolidation.yaml version>"
+}
+```
+
+Confidence is a **deterministic** function of `signals` and `weights`. The same inputs always produce the same score. The LLM is not consulted for the score itself; it is consulted only for the qualitative parts of `Conflict` (description, resolution rationale).
+
+#### Criticality (embedded in `ConsolidatedRequirement.criticality`)
+
+```json
+{
+  "level": "critical | important | moderate | minor",
+  "numeric": 0.70,
+  "rationale": "<one-sentence explanation from the LLM>",
+  "assessed_by": {
+    "model": "<pinned reasoning model>",
+    "prompt_version": "<hash>"
+  }
+}
+```
+
+Criticality is emitted by the LLM with the cluster summary as context, on the fixed discrete scale defined in `config/consolidation.yaml`. The `numeric` value is derived from the discrete `level` via the same config (not LLM-emitted). Cached on `hash(statement + cluster_summary_hash + prompt_version + model)`.
+
+#### ConsolidatedRequirement (in `clusters/<cluster>/consolidated/requirements.json`)
 
 ```json
 {
   "id": "<cluster>:<index>",
+  "group_id": "<RequirementGroup.group_id>",
+
   "statement": "<resolved canonical statement>",
+  "type": "<resolved single value from the type taxonomy>",
+  "status": "<resolved single value from the status taxonomy>",
+
   "sources": [
-    {"requirement_id": "...", "source_id": "...", "source_date": "..."}
+    {"requirement_id": "...", "source_id": "...", "source_type": "...",
+     "source_date": "...", "excerpt": "<verbatim>"}
   ],
-  "conflict": {
-    "present": true,
-    "description": "Source A says X; source B says Y",
-    "resolution_rationale": "Source A is more recent and from authoritative RFP"
-  },
-  "confidence": 0.0,        // 0..1
-  "criticality": 0.0,       // 0..1
-  "review_priority": 0.0,   // criticality * (1 - confidence), tunable
+
+  "conflicts": [
+    { "...": "<Conflict>" }
+  ],
+  "change_plan_flag": true,           // convenience: any source had type=change_plan or status=planned/proposed
+
+  "confidence": { "...": "<Confidence>" },
+  "criticality": { "...": "<Criticality>" },
+  "review_priority": 0.42,            // derived per config/consolidation.yaml formula
+
   "resolved_by": {
-    "model": "...",
-    "prompt_version": "..."
+    "model": "<pinned reasoning model>",
+    "prompt_version": "<hash>"
+  }
+}
+```
+
+Resolution rules:
+- `statement` is the canonical resolved text. If a single source dominated (per reconciliation rules), it's that source's statement (verbatim or lightly normalized); if the LLM produced a synthesis, the synthesis text and its provenance are recorded under the relevant `Conflict.resolution`.
+- `type` and `status` are **single resolved values**. Disagreement among sources surfaces in `conflicts[]` with kinds `type_disagreement` or `status_disagreement` — the resolved value is in the top-level fields; the disagreement remains visible.
+- `change_plan_flag` is a derived convenience flag, true when any contributing requirement had `type: change_plan` OR `status: planned | proposed`. The review queue treats this flag as a tagging signal (see [D-37]).
+
+#### CalibrationCase (in `config/calibration/cases/<case_id>.yaml`)
+
+One file per calibration case. Captures a hand-assigned **target priority** for a specific consolidated requirement, used to tune confidence weights and validate criticality assessment.
+
+```yaml
+case_id: cal-payments-001
+case_kind: priority_ranking | scoring_check
+added_at: 2026-04-22
+added_by: manual_curation
+
+frozen_input:
+  cluster_summary: |
+    <verbatim cluster summary at time of authoring>
+  consolidated_requirement:
+    # frozen copy of the ConsolidatedRequirement (or a candidate produced for this case)
+    statement: "..."
+    type: functional
+    status: planned
+    sources: [...]
+    conflicts: [...]
+
+target:
+  # The consultant's hand-judged correct outcome.
+  criticality_level: critical
+  # Optional: target confidence band (rarely needed; usually we tune via priority).
+  expected_confidence_band: [0.4, 0.6]
+  # Required: target review_priority rank position (within the calibration set).
+  target_rank: 3
+  notes: |
+    Regulatory requirement; high impact if missed. Multiple sources but with stale RFP language.
+
+rubric:
+  # Used by the calibration judge.
+  criteria:
+    - name: priority_alignment
+      description: "Computed review_priority places this case within ±2 ranks of target_rank."
+      weight: 0.5
+    - name: criticality_alignment
+      description: "Computed criticality_level matches target_level."
+      weight: 0.3
+    - name: confidence_plausibility
+      description: "Computed confidence is within the target band (if specified)."
+      weight: 0.2
+```
+
+#### CalibrationRun (in `config/calibration/runs/<run_id>.json`)
+
+```json
+{
+  "run_id": "2026-05-14T11-00-00Z",
+  "consolidation_config_version": "<config/consolidation.yaml version>",
+  "weights_tested": {
+    "source_count": 0.20, "authority_weighted_agreement": 0.35, "...": "..."
+  },
+  "cases": [
+    {
+      "case_id": "cal-payments-001",
+      "computed": {
+        "criticality_level": "critical",
+        "confidence_score": 0.51,
+        "review_priority": 0.49,
+        "rank_in_set": 3
+      },
+      "judge_verdict": { "...": "<JudgeVerdict against rubric>" },
+      "case_outcome": "pass | fail | borderline"
+    }
+  ],
+  "aggregate": {
+    "mean_score": 0.78,
+    "rank_correlation": 0.83,
+    "n_pass": 42, "n_fail": 4, "n_borderline": 4
+  },
+  "verdict": "pass | fail | tuning_proposed"
+}
+```
+
+When `verdict: tuning_proposed`, the calibration command additionally writes proposed weight adjustments to `config/calibration/tuned_weights.yaml` for human review. Like the taxonomy lock ([D-20]), tuning is a human-gated step: the consultant reviews proposed weights and explicitly accepts them.
+
+#### CrossClusterCandidate (in `cross_cluster/candidates.json`)
+
+Intermediate output of Stage 4.5's embedding pre-filtering. Persisted for inspectability and cache reuse.
+
+```json
+{
+  "candidate_id": "cc-cand-0042",
+  "a": {
+    "consolidated_requirement_id": "<cluster>:<index>",
+    "cluster_path": "clusters/payments-service",
+    "statement": "...",
+    "type": "functional",
+    "status": "implemented"
+  },
+  "b": {
+    "consolidated_requirement_id": "<cluster>:<index>",
+    "cluster_path": "clusters/checkout-experience",
+    "statement": "...",
+    "type": "functional",
+    "status": "planned"
+  },
+  "similarity": 0.89,
+  "cluster_distance": 2,           // tree distance; 1 = siblings, 2 = aunt/uncle, etc.
+  "verified": false                // becomes true after LLM verification produces a verdict
+}
+```
+
+#### CrossClusterConflict (in `cross_cluster/conflicts.json`)
+
+Verified cross-cluster conflicts. Each entry references the two participating per-cluster `ConsolidatedRequirement` records but does not duplicate them.
+
+```json
+{
+  "id": "cc-conf-0007",
+  "candidate_id": "cc-cand-0042",
+  "kind": "contradiction | scope_mismatch",
+  "participants": [
+    {"consolidated_requirement_id": "...", "cluster_path": "..."},
+    {"consolidated_requirement_id": "...", "cluster_path": "..."}
+  ],
+  "description": "Cluster A says system MUST X; cluster B says system MUST NOT X for the same flow.",
+  "evidence": [
+    {"consolidated_requirement_id": "...", "excerpt": "<verbatim from source>"},
+    {"consolidated_requirement_id": "...", "excerpt": "<verbatim from source>"}
+  ],
+  "verdict": "confirmed_conflict",     // confirmed_conflict | not_a_conflict | needs_review
+  "verdict_rationale": "<one-paragraph LLM explanation>",
+  "detected_by": {
+    "model": "<pinned reasoning model>",
+    "prompt_version": "<hash>"
+  }
+}
+```
+
+Stage 4.5 emits one record per LLM-verified candidate. `verdict: not_a_conflict` entries are kept (not deleted) so re-runs don't re-pay for verifying the same negative cases.
+
+#### CrossClusterAnnotation (in `clusters/<cluster>/consolidated/cross_cluster_annotations.json`)
+
+Sidecar file written by Stage 4.5 that links per-cluster `ConsolidatedRequirement` records to their cross-cluster conflict participations. **Preserves immutability of Stage 4 outputs** (§1 principle 2): per-cluster `requirements.json` is not modified. Downstream consumers (review queue generation, report) read both files together.
+
+```json
+{
+  "annotations": [
+    {
+      "consolidated_requirement_id": "<cluster>:<index>",
+      "cross_cluster_conflicts": ["cc-conf-0007", "cc-conf-0012"]
+    }
+  ],
+  "generated_by": {
+    "stage": "cross_cluster_reconciliation",
+    "version": "<config/consolidation.yaml version>",
+    "generated_at": "<ISO timestamp>"
   }
 }
 ```
 
 #### ReviewQueueItem (in `review_queue.json`)
 
-A flat sortable list. Same shape as `ConsolidatedRequirement` plus:
+A flat sortable list, sorted descending by `review_priority`. Same shape as `ConsolidatedRequirement` plus location and a short tag set for filtering. Cross-cluster conflicts and the `cross_cluster_boost` are folded in here at queue-generation time.
 
 ```json
 {
   "cluster_path": "clusters/financial-domain/payments-service",
+  "tags": ["change_plan", "type_disagreement", "borderline_criticality", "cross_cluster_conflict"],
+  "cross_cluster_conflicts": ["cc-conf-0007"],
+  "review_priority_components": {
+    "base": 0.42,
+    "change_plan_boost": 0.00,
+    "cross_cluster_boost": 0.20,
+    "total": 0.62
+  },
   "...": "<all ConsolidatedRequirement fields>"
 }
 ```
+
+**Tags** are derived flags useful for filtering the review queue without recomputing:
+- `change_plan` — `change_plan_flag` is true.
+- `<conflict_kind>` — one tag per distinct `conflict.kind` present (e.g., `contradiction`, `scope_mismatch`).
+- `low_confidence` — `confidence.score < 0.4`.
+- `borderline_criticality` — criticality is within the borderline band defined in `config/consolidation.yaml`.
+- `singleton` — group has exactly one source (no cross-source corroboration).
+- `cross_cluster_conflict` — item participates in at least one verified `CrossClusterConflict` (`verdict: confirmed_conflict`).
+
+#### Report configuration (in `config/report.yaml`)
+
+Controls what the report includes and how freshness is judged. Lives in version control.
+
+```yaml
+version: "<semver or hash>"
+
+top_queue:
+  size: 50                            # number of review queue items rendered in full
+
+freshness:
+  # A signal is "stale" when no run satisfying these conditions has occurred
+  # against the current artifact versions. Used in the Health section.
+  eval:
+    require_pass_for_current_prompt: true   # eval must have passed for the current prompt_version
+    max_age_days: null                       # null = no age cap; integer = warn if older
+  calibration:
+    max_age_days: 30                         # warn if last accepted calibration is older
+    require_run_after_consolidation_config_change: true
+  taxonomy:
+    warn_if_locked_with_from_starting: true  # surface the [D-19] shortcut as a known limitation
+
+sections:
+  # Per-section toggle. All on by default. The order in the rendered report matches this list.
+  - top_queue
+  - landscape
+  - health
+  - provenance
+
+provenance:
+  per_source_breakdown: true            # show counts by source_type as well as totals
+
+health:
+  show_model_pins: true                 # surface config/models.yaml versions
+  show_prompt_versions: true            # surface prompt hashes for each LLM-driven step
+```
+
+#### ReportRun (header block written into each `reports/<timestamp>.md`)
+
+Every report opens with a YAML frontmatter block capturing the inputs that produced it. This makes any rendered report self-describing and diffable.
+
+```yaml
+---
+report_id: 2026-05-14T14-30-00Z
+report_config_version: <config/report.yaml version>
+
+inputs:
+  taxonomy:
+    version: <config/taxonomy.locked.yaml version>
+    locked_at: <ISO>
+    locked_from_starting: false
+  clustering:
+    version: <config/clustering.yaml version>
+    embedding_model: nomic-embed-text-v1.5@<revision>
+  consolidation:
+    version: <config/consolidation.yaml version>
+    tuned_weights_version: <config/calibration/tuned_weights.yaml version or 'defaults'>
+  cross_cluster:
+    enabled: true
+    candidates_count: 187
+    confirmed_conflicts: 12
+    needs_review: 3
+
+freshness_warnings:
+  # Populated when freshness signals indicate staleness; empty when clean.
+  - id: eval_stale_extract_requirements
+    severity: warn
+    message: |
+      Eval for extract_requirements has no passing run for current prompt
+      version <hash>; most recent run is from 2026-05-02 against an older prompt.
+  - id: calibration_stale
+    severity: warn
+    message: |
+      Last accepted calibration is 47 days old (threshold: 30). Confidence
+      weights may not reflect current consolidation behavior.
+
+counts:
+  evidence:
+    git_repos: 23
+    jira_tickets: 1842
+    rfp_docs: 7
+    spreadsheets: 4
+    transcripts: 11
+  normalized: 1887
+  extracted:
+    requirements: 4321
+    interactions: 1209
+    domains: 412
+  clusters:
+    total: 35
+    active: 31
+    archived: 4
+  consolidated_requirements: 2876
+  review_queue_total: 2876
+  review_queue_rendered: 50
+---
+```
+
+The frontmatter is followed by markdown body content (sections specified in §3 Stage 5.5).
 
 #### Eval configuration (in `config/eval.yaml`)
 
@@ -898,19 +1376,24 @@ Determinism guarantees:
 - No LLM calls in phase 3a.
 
 **3b · Semantic labeling (LLM, cached).**
-- For each cluster, generate `summary.md` covering responsibilities and interactions, from member docs and their extractions.
+- For each **non-archived** cluster, generate `summary.md` covering responsibilities and interactions, from member docs and their extractions.
+- Archived clusters are skipped per [D-51]; their existing `summary.md` (frozen at archive-time state) remains untouched.
 - Orphan clusters additionally get a meaningful name (replacing `orphan-<index>`) generated from their summary; the rename is recorded in `_index.yaml`.
 - Cache key: `hash(sorted(member_content_hashes) + prompt_version + model)`.
 - Summary only regenerates when membership or member content changes.
 
 **3c · Hierarchy (LLM, low frequency).**
-- `identifySuperClusters`: given sibling cluster summaries within a path, propose groupings.
+- `identifySuperClusters`: given **non-archived** sibling cluster summaries within a path, propose groupings.
+- Archived clusters are not considered as super-cluster candidates and are not grouped into proposed parents.
 - Output is a proposed tree edit applied to `_index.yaml`.
 - Re-summarization of new parents cascades but is cached, so unchanged subtrees cost nothing.
 
 **3d · Archival.**
-- Manual flag in `_index.yaml`. Archived clusters are skipped in all subsequent summarization and consolidation.
-- Archived git repos do **not** seed clusters in phase 3a re-runs.
+- Manual flag in `_index.yaml`: the consultant sets `archived: true`, populates `archived_at` (ISO timestamp), and `archived_at_versions` (versions of relevant configs at archive time). No automation triggers archival ([D-50]).
+- Member docs remain in `clusters/<name>/members.yaml` and are NOT released to the unassigned pool ([D-52]).
+- All cluster files (`summary.md`, `members.yaml`, `consolidated/*.json`, `consolidated/cross_cluster_annotations.json`) remain in place, readable, and frozen at archive-time state.
+- Archived git repos do NOT seed clusters in phase 3a re-runs.
+- Unarchival is just flipping `archived: false`; processing resumes on the next pipeline run with `archived_at_versions` preserved as historical record.
 
 **Re-clustering policy (see [D-28]).** Phase 3a operates in one of two modes set in `config/clustering.yaml`:
 - `incremental` (default): existing assignments are preserved; only new or changed docs are assigned. New seed clusters are created when new non-archived git repos are added. HDBSCAN runs only over genuinely-new unassigned docs combined with already-unassigned docs. Stable cluster identities across runs.
@@ -931,34 +1414,154 @@ The orchestration subcommand `cluster --full` forces a full re-cluster regardles
 
 ### Stage 4 · Consolidate
 
-**Purpose.** Group extracted requirements per cluster, surface conflicts, resolve them with provenance, and score for human review priority.
+**Purpose.** Group extracted requirements per cluster, surface and resolve conflicts with explicit kinds, and score for human review priority. Produce a ranked review queue.
 
-**Input → Output.** `clusters/` + `extracted/` → `clusters/**/consolidated/`.
+**Input → Output.** `clusters/` + `extracted/` + `config/consolidation.yaml` + (optional) `config/calibration/tuned_weights.yaml` → `clusters/**/consolidated/` + `review_queue.json`.
 
-**Approach.** Runs bottom-up through the cluster tree. At each cluster:
+**Approach.** Runs **bottom-up** through the cluster tree. At each non-archived cluster, six phases execute in sequence; child-cluster outputs propagate upward as inputs.
 
-1. **Gather.** All extracted requirements from member docs + already-consolidated requirements from child clusters.
-2. **Group.** Semantically (embedding similarity → LLM verification).
-3. **Detect conflicts.** Within each group, identify contradictions, scope differences, version skew.
-4. **Resolve.** Apply provenance rules in this order:
-   - Explicit override in `config/` (rare, manual).
-   - Source authority weights from `config/` (e.g., RFP > Jira > transcripts).
-   - Recency (more recent wins, all else equal).
-   - LLM judgment with rationale recorded.
-5. **Score.**
-   - `confidence`: how sure the resolution is. Function of source agreement, recency spread, and LLM self-report.
-   - `criticality`: importance to cluster scope. LLM with cluster summary as context.
-   - `review_priority`: `criticality * (1 - confidence)`, tunable.
-6. **Emit.** `consolidated/requirements.json` and `consolidated/review_queue.json`.
+**4a · Gather.**
+- Iterate over **non-archived** clusters only ([D-51]). Archived clusters are skipped entirely at this stage.
+- For each non-archived cluster, collect all `Requirement` records from member docs (via `extracted/<source_type>/<source_id>/requirements.json`).
+- Collect already-consolidated requirements from **non-archived** child clusters (each propagates upward as a single record carrying its own `sources` and `conflicts`). If a child cluster is archived, its consolidated outputs are NOT propagated to the parent — they're frozen, not feeding active processing.
 
-After all clusters: merge and re-sort into top-level `review_queue.json`.
+**4b · Group (two-stage; [D-34]).**
 
-**Key decisions.** [D-10 Provenance-driven resolution], [D-11 Bottom-up consolidation], [D-13 Expensive model here].
+Pre-grouping (deterministic):
+- Each requirement gets an embedding via the same wrapper used by clustering ([D-25]), with the `clustering: ` prefix replaced by a `grouping: ` prefix (recorded in the embedding sidecar). Embeddings are content-hash cached.
+- Compute pairwise cosine similarity within the cluster's requirement set; build candidate groups as connected components where every edge ≥ `grouping.embedding_threshold` (default 0.78).
+- Singletons (requirements with no above-threshold neighbors) become singleton candidates.
+
+LLM verification:
+- For each multi-member candidate group, call the `group_requirements` prompt with the member statements and source metadata. The LLM returns one of: `confirm`, `split` (with proposed sub-grouping), `reject` (members are unrelated).
+- `split` produces multiple output groups; `reject` dissolves to singletons.
+- Verification call cached on `hash(sorted(member_content_hashes) + prompt_version + model)`.
+- `config/consolidation.yaml: grouping.llm_verification: false` is an escape hatch that skips verification and uses pre-groups directly (useful for cost-bounded re-runs; recorded in group provenance).
+
+Output: `clusters/<cluster>/consolidated/groups.json` with one `RequirementGroup` record per group.
+
+**4c · Conflict detection ([D-35]).**
+
+Per group, detect all applicable conflict kinds:
+
+- **Deterministic detections** (cheap, run first):
+  - `status_disagreement`: members have ≥2 distinct `status` values.
+  - `type_disagreement`: members have ≥2 distinct `type` values.
+  - `version_skew` (candidate): `source_date` spread exceeds a threshold (default 180 days) AND members have non-trivial statement variation.
+- **LLM-driven detections** (called only when the group has ≥2 members):
+  - `contradiction`: explicit negation or mutual exclusivity between statements.
+  - `scope_mismatch`: agreement on behavior with disagreement on scope/applicability.
+  - Confirms or rejects candidate `version_skew` cases.
+
+A group can have multiple conflicts of different kinds. Each conflict carries explicit `evidence` (the contributing requirements with verbatim excerpts). LLM-driven detection is a single call per group with a structured-output schema enumerating all conflict kinds found; cached on group inputs.
+
+**4d · Reconciliation ([D-10] retained; rule application formalized).**
+
+For each group, produce the resolved `statement`, `type`, and `status`:
+- Apply reconciliation rules in the order defined in `config/consolidation.yaml: reconciliation.rules`.
+- `manual_override`: looks up `config/consolidation_overrides/<group_id>.yaml` if present; if so, the override's values are used and `applied_rule: manual_override` is recorded.
+- `source_authority`: sources are weighted by `source_authority`; the highest-weighted source's values win. Ties fall through.
+- `recency`: most recent `source_date` wins. Ties fall through.
+- `llm_judgment`: final fallback. Single LLM call with the `reconcile_group` prompt, returning the resolved values and a rationale. Always records rationale via `Conflict.resolution.rationale`.
+
+When the resolved `statement` is a synthesis (i.e., not verbatim from any single source), this is flagged in the resolution rationale and the synthesis is recorded as the `statement` while the original excerpts remain in `sources`.
+
+**4e · Scoring.**
+
+Confidence (deterministic; [D-36]):
+- Compute the five signals from §2.3 `Confidence`:
+  - `source_count` (log-scaled): `min(1.0, log(1 + n) / log(1 + 5))` — saturates around 5 sources.
+  - `authority_weighted_agreement`: weighted fraction of sources whose statement/type/status matches the resolved values, weighted by `source_authority`.
+  - `recency_spread_penalty`: `min(1.0, spread_days / 730)` — penalty saturates at 2 years.
+  - `statement_similarity`: mean pairwise cosine similarity of member statements (from grouping embeddings; effectively free).
+  - `conflict_penalty`: 1.0 if any `Conflict` is present, else 0.0.
+- Combine via the weighted formula in `config/consolidation.yaml: confidence.weights` (overridden by `config/calibration/tuned_weights.yaml` when present):
+  - `score = w_count * source_count + w_auth * authority_weighted_agreement + w_sim * statement_similarity - w_recency * recency_spread_penalty - w_conflict * conflict_penalty`
+  - Clamped to [0, 1].
+- Signals and weights are recorded in the `Confidence` object for full auditability.
+
+Criticality (LLM, cached; [D-37]):
+- Call the `assess_criticality` prompt with the resolved statement and the cluster's `summary.md` as context.
+- The LLM emits one of `critical | important | moderate | minor` (the fixed scale) plus a one-sentence rationale.
+- The numeric value is looked up from `config/consolidation.yaml: criticality.numeric`; the LLM does not emit floats.
+- Cached on `hash(statement + cluster_summary_hash + prompt_version + model)`.
+
+Review priority (deterministic):
+- Computed from the formula in `config/consolidation.yaml: review_priority.formula`. Default: `criticality_numeric * (1 - confidence.score)` + optional `change_plan_boost`.
+- The combination favors items that are both critical AND uncertain — exactly the cases worth a human's time.
+
+**4f · Emit.**
+- Write `clusters/<cluster>/consolidated/requirements.json` (list of `ConsolidatedRequirement`).
+- Write `clusters/<cluster>/consolidated/review_queue.json` (cluster-local queue, sorted by `review_priority`).
+- Propagate `ConsolidatedRequirement` records upward; the parent cluster's 4a `gather` will treat each as a single source.
+
+After all clusters: merge all cluster-local queues into top-level `review_queue.json`, sorted by `review_priority` descending, with `tags` derived per §2.3.
+
+**Caching.** Consolidation is cached at three levels:
+- Group-level: grouping result cached on member content hashes + grouping config.
+- Conflict-level: conflict detection cached on group inputs.
+- Criticality-level: criticality cached on statement + cluster summary hash.
+Re-running consolidation when nothing has changed is near-free; changing `config/consolidation.yaml` invalidates the relevant levels selectively (see [D-38]).
+
+**Key decisions.** [D-10 Provenance-driven resolution], [D-11 Bottom-up consolidation], [D-13 Expensive model here], [D-34 Two-stage grouping], [D-35 Multiple conflict kinds with explicit detection], [D-36 Deterministic confidence; LLM only for qualitative parts], [D-37 Discrete criticality scale; cluster summary as context], [D-38 Layered consolidation caching], [D-39 Calibration loop with human-gated weight tuning].
 
 **Failure modes.**
-- **Cross-cluster conflicts missed.** Bottom-up consolidation catches conflicts within a subtree but not between distant branches. A Jira ticket in cluster A and an RFP requirement in cluster B may contradict and never be compared. Partial mitigation: the root-cluster consolidation pass surfaces what it can; full mitigation is an open question (§6, [OPEN-3]).
-- **Confidence/criticality miscalibration.** Initial scoring will be noisy. Plan to hand-label ~50 items and tune scoring before trusting the queue.
-- **Provenance authority weights are guesses.** RFP isn't always more authoritative than Jira if the Jira is from last week and the RFP is from last year. Recency-vs-authority trade-offs should be configurable, not hardcoded.
+- **Cross-cluster conflicts missed at this stage.** Bottom-up consolidation only sees one subtree at a time; conflicts between distant branches are not detected here. Stage 4.5 (Cross-cluster Reconciliation) addresses this; see [D-40].
+- **Grouping over-merges.** Embedding pre-grouping followed by LLM `confirm` can still merge requirements that share vocabulary but differ in scope. Mitigation: LLM verification's `split` outcome is the primary defense; `scope_mismatch` conflict detection catches surviving cases.
+- **Grouping under-merges.** Paraphrased equivalents fall below the embedding threshold and never enter LLM verification. Partial mitigation: threshold defaults at 0.78 are tuned conservatively; lowering increases LLM verification cost but improves recall.
+- **Criticality miscalibration on niche clusters.** A cluster with very narrow scope may have its critical items rated `moderate` because the LLM lacks domain context. Mitigation: `assess_criticality` prompt explicitly anchors to the cluster summary; the calibration loop ([D-39]) catches systematic miscalibration.
+- **Confidence weights mis-tuned.** Default weights are guesses. Mitigation: the calibration loop produces `tuned_weights.yaml` from human-judged cases; weights only override defaults after explicit human acceptance ([D-39]).
+- **LLM-emitted criticality drift across model versions.** A model upgrade can shift the distribution of criticality levels. Mitigation: criticality cache key includes the model id; the calibration set runs after model changes and surfaces drift.
+- **Manual overrides go stale.** An override authored in iteration 3 may no longer match the resolved group in iteration 12 (membership changed). Mitigation: overrides are keyed on `group_id`, which is content-derived; when the group changes, the override stops matching and a warning is emitted.
+
+### Stage 4.5 · Cross-cluster Reconciliation
+
+**Purpose.** Detect conflicts between consolidated requirements that live in different cluster subtrees and never share a per-cluster consolidation pass. Surface findings without re-running per-cluster consolidation.
+
+**Input → Output.** All `clusters/**/consolidated/requirements.json` (from Stage 4) + `config/consolidation.yaml` → `cross_cluster/candidates.json` + `cross_cluster/conflicts.json` + `clusters/**/consolidated/cross_cluster_annotations.json`.
+
+**When it runs.** Always, immediately after Stage 4 in `consolidate` (per [D-43]). Can be skipped by setting `config/consolidation.yaml: cross_cluster.enabled: false` for cost-bounded runs.
+
+**Scope by design ([D-41]):**
+- Detects only `contradiction` and `scope_mismatch` kinds. `status_disagreement` and `type_disagreement` are excluded because same-named concepts in different clusters legitimately differ on these dimensions (a "user" in auth ≠ a "user" in analytics). `version_skew` is excluded because cross-cluster same-statement-different-time is unusual and noisy.
+- Detects only between requirements in **different** clusters (`cluster_distance ≥ 1` from `config`). Same-cluster pairs were already handled in Stage 4b/c.
+
+**Approach.** Four phases.
+
+**4.5a · Embedding pre-filtering (deterministic).**
+- Collect all `ConsolidatedRequirement` records from non-archived clusters into a global pool. Archived clusters are excluded per [D-51]; their consolidated requirements do not contribute to cross-cluster conflict candidates and cannot receive cross-cluster boosts.
+- For each requirement, compute or reuse its embedding via the same wrapper used in Stage 4b (the `grouping: ` prefix), cached on content hash.
+- Compute pairwise cosine similarity across the entire pool, but **exclude same-cluster pairs** and pairs whose `cluster_distance < min_pair_cluster_distance` (default 1).
+- Retain pairs with `similarity ≥ cross_cluster.embedding_threshold` (default 0.85).
+- If the candidate count exceeds `cross_cluster.max_candidate_pairs` (default 500), halt with a warning rather than proceeding silently — the consultant decides whether to raise the threshold or raise the cap.
+- Write `cross_cluster/candidates.json` with all surviving pairs.
+
+**4.5b · LLM verification.**
+- For each candidate pair, call the `verify_cross_cluster_conflict` prompt with both consolidated requirements (statement, type, status, sources excerpts) and both cluster summaries as context.
+- The LLM returns a structured `verdict: confirmed_conflict | not_a_conflict | needs_review`, the inferred `kind`, a description, and a rationale.
+- `needs_review` is a deliberate third option for cases the LLM is uncertain about — surfaced for human judgment rather than forced into a binary.
+- Cached on `hash(both consolidated_requirement_ids + both cluster_summary_hashes + prompt_version + model)`. Reusing two stable inputs means re-runs after consolidation changes only invalidate verifications that touch changed inputs.
+
+**4.5c · Emit.**
+- Write `cross_cluster/conflicts.json` with all verified records (including `not_a_conflict` and `needs_review` for cache persistence).
+- For each `confirmed_conflict` and `needs_review`, write/update the relevant `clusters/<cluster>/consolidated/cross_cluster_annotations.json` sidecars referencing the conflict id.
+- Per-cluster `requirements.json` is NOT modified — annotations live in sidecars to preserve immutability ([D-42]).
+
+**4.5d · Review queue regeneration.**
+- Top-level `review_queue.json` is regenerated to fold in cross-cluster annotations.
+- For each `ReviewQueueItem` whose `consolidated_requirement_id` appears in any `confirmed_conflict`, apply `cross_cluster_boost` to `review_priority` (default 0.20, configurable).
+- The `cross_cluster_conflicts` field on the item lists the relevant conflict ids; `tags` gains `cross_cluster_conflict`.
+- `review_priority_components` breaks down the additive contributions so the boost is auditable.
+
+**Key decisions.** [D-40 Stage 4.5 as separate phase; cross-cluster boost], [D-41 Conservative scope: contradiction and scope_mismatch only], [D-42 Annotations as sidecar files; immutability preserved], [D-43 Cross-cluster always runs, config-gated for cost], [D-44 Hard candidate cap with halt-and-warn].
+
+**Failure modes.**
+- **Candidate explosion.** A corpus with many similar-but-legitimately-distinct requirements (e.g., per-service variants of the same pattern) can produce thousands of candidates. Mitigation: hard cap ([D-44]) halts with a warning; the consultant raises the threshold or accepts a larger cap explicitly.
+- **LLM verification false positives.** The verifier confirms a "conflict" that the per-cluster contexts make irrelevant. Mitigation: cluster summaries are part of the prompt; `needs_review` is a first-class verdict; the calibration loop ([D-39]) can include cross-cluster examples.
+- **LLM verification false negatives.** The verifier rejects a real conflict (e.g., subtle scope mismatch). Mitigation: borderline cases that score in a `verdict: needs_review` band are surfaced; the consultant can override via the same `consolidation_overrides/` mechanism extended to cross-cluster ids.
+- **Cross-cluster boost mis-tuned.** Default boost of 0.20 may push cross-cluster items above unrelated high-criticality items, or fail to surface them above noise. Mitigation: `cross_cluster_boost` is in `config/consolidation.yaml`; calibration cases can include cross-cluster examples and the boost is one more tunable weight.
+- **Cluster reorganization invalidates cached verifications.** If a cluster splits or merges, consolidated requirement ids change, and verification cache entries are orphaned. Mitigation: cache keys include consolidated requirement ids (which are content-derived); orphan entries naturally stop being read. Cache cleanup is opportunistic.
+- **Annotation sidecars go stale.** If Stage 4 re-runs and produces different consolidated requirements (different ids), Stage 4.5 annotations may reference ids that no longer exist. Mitigation: Stage 4.5 invalidates and rewrites annotation sidecars based on the current Stage 4 output; orphaned annotations are detected on read and ignored with a warning.
 
 ### Stage 5 · Orchestration
 
@@ -977,8 +1580,11 @@ python -m assessment extract            # refuses to run without locked taxonomy
 python -m assessment embed              # refreshes stale embedding sidecars only; idempotent
 python -m assessment cluster            # phases 3a-3d in current re-clustering mode (default: incremental)
 python -m assessment cluster --full     # forces full re-cluster from scratch
-python -m assessment consolidate        # bottom-up
-python -m assessment report             # generates the human-facing summary
+python -m assessment consolidate        # Stage 4 (bottom-up) + Stage 4.5 (cross-cluster) + review_queue.json
+python -m assessment consolidate --no-cross-cluster   # skips Stage 4.5; equivalent to cross_cluster.enabled=false
+python -m assessment calibrate:run      # runs calibration cases against current weights; writes CalibrationRun + proposed weights
+python -m assessment calibrate:accept   # accepts proposed weights into config/calibration/tuned_weights.yaml
+python -m assessment report             # Stage 5.5: writes reports/<ISO_timestamp>.md
 ```
 
 Discovery and lock are deliberately separate commands. `discover` is reproducible (caches its LLM calls); `lock` is a human-gated step.
@@ -997,6 +1603,74 @@ This gives `make`-like incremental behavior without `make`.
 - Hidden state in adapters (e.g., API rate-limit retries that aren't deterministic).
 - Cache invalidation bugs — output exists but inputs changed in a way the hash didn't catch.
 - Partial failures leaving inconsistent state (e.g., half a cluster's docs re-extracted, half not). Mitigation: stage operations are per-document; resume is safe.
+
+### Stage 5.5 · Report
+
+**Purpose.** Produce a consultant-facing "first read" markdown document that surfaces the highest-priority review items, the system landscape, the pipeline's health and freshness signals, and the provenance of the run. The report is the artifact the consultant opens to decide where to focus next.
+
+**Input → Output.** All pipeline outputs (review queue, cluster index, cross-cluster conflicts, eval runs, calibration runs, config files) + `config/report.yaml` → `reports/<ISO_timestamp>.md`.
+
+**When it runs.** On demand, by the consultant. Each invocation writes a new timestamped file; existing reports are never overwritten ([D-46]). Recommended cadence: after every consolidate run, plus an additional snapshot before major prompt or model changes for clean before/after comparison.
+
+**Approach.** No LLM calls. The report is purely a rendering of existing artifacts; reproducibility comes from the frontmatter capturing every input version that contributed to the rendered content. Six concerns separated:
+
+**5.5a · Frontmatter assembly.**
+- Read versions from all config files (`taxonomy.locked.yaml`, `clustering.yaml`, `consolidation.yaml`, `calibration/tuned_weights.yaml` if present).
+- Count artifacts: evidence per source type, normalized docs, extracted records per type, clusters, consolidated requirements.
+- Read `cross_cluster/conflicts.json` for cross-cluster summary counts.
+- Compute freshness signals (see 5.5d).
+- Assemble the `ReportRun` YAML frontmatter (§2.3).
+
+**5.5b · Top-N section (the headline).**
+- Read `review_queue.json` (sorted by `review_priority` descending).
+- Take the top `top_queue.size` items (default 50 per `config/report.yaml`).
+- For each item, render a structured markdown block containing:
+  - Cluster path and rank in queue.
+  - Resolved statement, `type`, `status`, `change_plan_flag`.
+  - All conflicts with kind, description, evidence excerpts.
+  - Confidence breakdown: score + the five signals + which weights version produced it.
+  - Criticality level + rationale (the LLM's one-sentence explanation).
+  - `review_priority_components` (base + boosts + total) so the consultant sees exactly why this item ranked here.
+  - Source provenance: one line per contributing source with type, id, date, and excerpt.
+  - Cross-cluster references: links to other affected requirements when `cross_cluster_conflicts` is non-empty.
+  - Tags as a compact filter line.
+
+The block is self-contained — the consultant can act on a single item without opening other files.
+
+**5.5c · Landscape section.**
+- Read `clusters/_index.yaml` and per-cluster `summary.md` files.
+- Render a tree view of the cluster hierarchy (depth-limited; archived clusters shown but **de-emphasized** — rendered with a visual marker like `[archived YYYY-MM-DD]` after the name and indented separately at the end of their parent's children).
+- For each non-archived cluster, render: purpose (one line from summary.md), member count, top 3 domains (from extracted domains, deduplicated by alias), top 5 interactions (from extracted interactions, grouped by kind).
+- For each archived cluster, render only: name, archive timestamp (from `archived_at`), member count, and the first line of its frozen `summary.md`. The full archived-cluster contents remain readable in `clusters/<name>/` for the consultant who needs them.
+- This section is read-only orientation; no decisions hang on it.
+
+**5.5d · Health section.**
+- Compute freshness signals against `config/report.yaml: freshness`:
+  - **Eval freshness:** for each LLM-driven step, check whether the most recent `EvalRun` was a `pass` against the current prompt version. If not, emit `eval_stale_<step>` warning.
+  - **Calibration staleness:** check the age of the most recent `calibrate:accept` against `freshness.calibration.max_age_days`. Check whether any `consolidation.yaml` config change has happened since (via git history of the config file). Emit `calibration_stale` warning if either fails.
+  - **Taxonomy freshness:** if `taxonomy.locked.yaml` was locked via the `--from-starting` shortcut ([D-19] escape hatch), emit `taxonomy_from_starting` warning.
+  - **Model pin drift:** detect when any model id in `models.yaml` has a newer pinnable version available (best-effort; provider-dependent; non-blocking).
+- Show pinned versions: every model id, every prompt version hash (per LLM-driven step), every config version.
+- Warnings are written to frontmatter (`freshness_warnings`) AND surfaced in this section in human-readable form.
+
+**5.5e · Provenance section.**
+- Render counts from frontmatter as a clean table (per-source breakdown enabled by default per `config/report.yaml: provenance.per_source_breakdown`).
+- Show ingestion timestamps for the most recently ingested artifact per source type.
+- Report counts of active vs. archived clusters (e.g., "31 active clusters, 4 archived"). Detailed archive listings live in the Landscape section.
+- Report the count of normalized docs that are members of archived clusters; this surfaces [R-27] (docs stuck in archived clusters) without requiring the consultant to grep.
+
+**5.5f · Write.**
+- Filename: `reports/<ISO_timestamp>.md` where `<ISO_timestamp>` is the report's `report_id` (UTC, filename-safe form, e.g. `2026-05-14T14-30-00Z`).
+- Reports are never overwritten ([D-46]). Disk usage is a known concern; see [R-24].
+
+**Key decisions.** [D-45 Report is a deterministic rendering; no LLM calls], [D-46 Always timestamped; never overwritten], [D-47 Freshness signals are first-class report content], [D-48 Section toggles via config; sections are independently authored].
+
+**Failure modes.**
+- **Missing inputs.** If `review_queue.json` doesn't exist (consolidate never ran), the report stage fails fast with a clear error rather than producing a half-empty report.
+- **Stale references in rendered items.** A report rendered now references content_hashes that may change later. Acceptable: the frontmatter pins every input version, so the consultant can reason about what was true at report time even if subsequent edits change things.
+- **Disk accumulation from never-overwritten reports.** Over many iterations, `reports/` grows unboundedly. Mitigation: consultants are encouraged to gitignore `reports/` for routine runs, committing only snapshots that matter (e.g., before major prompt changes); see [R-24].
+- **Freshness false negatives.** A signal can be technically fresh (recent run) but semantically stale (the run was on a different corpus than now). Mitigation: the eval-pass check is tied to the current `prompt_version`, not just timestamp; calibration freshness is tied to consolidation-config-change detection via git history.
+- **Freshness false positives.** A consultant who edited a prompt for a minor copy fix gets an eval-stale warning. Acceptable: the cost of a re-eval is low; the false positive is informative rather than blocking.
 
 ---
 
@@ -1257,6 +1931,174 @@ Each entry: *Decision · Rationale · Alternatives considered · Trade-offs acce
 - No eval cache at all. Rejected: re-running eval after a one-line README edit shouldn't pay for fresh LLM calls.
 **Trade-offs.** Two caches to reason about. Mitigation: both are content-addressed and committed to git; they don't interact except through being separate directories.
 
+### [D-34] Two-stage requirement grouping: embedding pre-grouping + LLM verification
+**Decision.** Consolidation groups requirements in two stages. First, embedding similarity above `grouping.embedding_threshold` produces candidate groups (deterministic, cheap, O(n²) similarity computation only within a cluster). Second, an LLM verification call per candidate group emits `confirm | split | reject`. Verification is cached on member content hashes + prompt version + model. An escape hatch (`grouping.llm_verification: false`) skips verification when cost-bounded.
+**Rationale.** Pure embedding grouping misses paraphrased equivalents and over-groups near-but-different requirements. Pure LLM grouping is O(n²) per cluster and cost-prohibitive at medium scale. The two-stage approach uses embeddings to collapse the search space and the LLM to catch the cases embeddings miss. The escape hatch acknowledges that for rough first runs, embedding-only grouping is adequate signal.
+**Alternatives.**
+- Pure embedding similarity. Rejected: known failure modes on paraphrase and scope.
+- Pure LLM grouping. Rejected: cost-prohibitive at medium scale.
+- Three-stage with a re-verification pass. Rejected: marginal benefit for the cost.
+**Trade-offs.** Two-stage means two failure surfaces (pre-grouping threshold + LLM verdict). Mitigation: pre-grouping threshold defaults are conservative (0.78); verification verdict and rationale are recorded in `groups.json` for inspection.
+
+### [D-35] Conflict has explicit kinds with mixed deterministic and LLM detection
+**Decision.** `Conflict.kind` is an enum (`contradiction | scope_mismatch | status_disagreement | version_skew | type_disagreement`). Status/type disagreements are detected deterministically from structured fields; version skew is detected deterministically (date spread) and confirmed by LLM; contradiction and scope mismatch are detected by LLM only. A single group can have multiple conflicts of different kinds.
+**Rationale.** "Is there a conflict?" is a worse question than "what kind of conflict, and what's the evidence?" Different kinds need different detection (cheap structured checks vs. expensive LLM reasoning) and different review treatment (status disagreement is often informational; contradiction is always serious). Explicit kinds also make the review queue filterable and the calibration set easier to author.
+**Alternatives.**
+- Single boolean `conflict.present`. Rejected: loses signal; original v0 draft.
+- Free-text conflict descriptions only. Rejected: not filterable; not aggregatable.
+- LLM-only detection for all kinds. Rejected: wastes tokens on disagreements that are obvious from structured fields.
+**Trade-offs.** Five kinds is a small taxonomy that may need extension (e.g., `priority_disagreement`). Acceptable: extending the kind enum is a config-level change; the framework absorbs new kinds without restructuring.
+
+### [D-36] Confidence is a deterministic function of observable signals; LLM only writes the qualitative parts
+**Decision.** `Confidence.score` is computed by a deterministic weighted formula over five signals (source count, authority-weighted agreement, recency spread, statement similarity, conflict presence). The LLM is **not** consulted for the score itself. The LLM IS consulted for the human-readable parts: `Conflict.description` and `Conflict.resolution.rationale`. Both signals and weights are recorded in the `Confidence` object for auditability.
+**Rationale.** Confidence needs to be explainable to the client and tunable via calibration. A hybrid deterministic-plus-LLM-adjustment design is appealing on paper but in practice combines the worst of both: less reproducible than pure deterministic, less nuanced than pure LLM, and twice as hard to calibrate. Keeping the score deterministic and letting the LLM contribute to free-text fields preserves both auditability and prose quality. Calibration ([D-39]) tunes the weights, not individual scores.
+**Alternatives.**
+- Hybrid: deterministic base + per-item LLM adjustment. Rejected: explainability and calibration suffer; cost increases.
+- Pure LLM-emitted confidence. Rejected: non-deterministic, hard to calibrate, hard to defend.
+- Drop confidence as a score; surface raw signals. Rejected: loses the review-queue ordering signal.
+**Trade-offs.** The deterministic formula will not capture every nuance. Mitigation: the five signals are a deliberately broad set covering source agreement, source authority, recency, and structural conflict — the dimensions that matter for an assessment. Edge cases that need finer reasoning surface through `Conflict.description`.
+
+### [D-37] Criticality is LLM-emitted on a fixed discrete scale, with cluster summary as context
+**Decision.** Criticality is one of four levels: `critical | important | moderate | minor`. The LLM emits the discrete level (not a float) via a single call with the resolved statement and the cluster's `summary.md` as context. The numeric value used for `review_priority` computation is looked up from `config/consolidation.yaml: criticality.numeric`. Cached on `hash(statement + cluster_summary_hash + prompt_version + model)`. The `change_plan_flag` is a separate, deterministic flag (true if any contributing requirement had `type: change_plan` or `status: planned | proposed`); it informs review-queue tags and an optional `change_plan_boost` to `review_priority`, but does not override criticality.
+**Rationale.** "Is this requirement central or peripheral to the cluster's scope?" is genuinely fuzzy; LLM judgment with cluster context is the right tool. But emitting floats is spurious precision — LLMs are unreliable at fine-grained numeric scoring and the difference between 0.62 and 0.68 carries no real meaning. A four-level discrete scale is what an LLM can do reliably and what a reviewer can use. The numeric mapping is a config concern, not a model concern. Change plan items are explicitly tagged (so the consultant can filter to them) but not auto-promoted to "critical" — a minor change plan item is still minor.
+**Alternatives.**
+- Continuous 0..1 emitted by the LLM. Rejected: spurious precision; harder to calibrate.
+- Five levels with explicit anchors. Rejected: four with named levels reads cleaner; the additional level adds ambiguity, not signal.
+- Heuristic criticality from source authority and reference count. Rejected: a popularity proxy isn't importance.
+- Constant criticality (drive priority from confidence only). Rejected: surfaces low-confidence trivia at the top of the queue.
+**Trade-offs.** Discrete levels can cluster at coarse granularity (many "important"). The calibration loop ([D-39]) catches this if it actually matters for the consultant's prioritization.
+
+### [D-38] Layered consolidation caching by content addressing
+**Decision.** Consolidation cache operates at three levels: grouping (keyed on member content hashes + grouping config), conflict detection (keyed on group inputs), and criticality (keyed on statement + cluster summary hash). Each level invalidates independently. Changes to `config/consolidation.yaml` invalidate only the levels affected by the changed sections (e.g., changing source authorities affects grouping authority signals and reconciliation but not criticality).
+**Rationale.** Consolidation is the most expensive stage (expensive reasoning model per [D-13]). Coarse caching would force full re-consolidation on small config edits; no caching would make iteration cost-prohibitive. Layered caching makes the cost of a change proportional to its scope.
+**Alternatives.**
+- Single cache key over all consolidation inputs. Rejected: any config edit triggers full re-consolidation.
+- No cache. Rejected: cost-prohibitive.
+**Trade-offs.** Cache invalidation logic is the most complex in the spec. Mitigation: each cache level is content-addressed and independently testable; the cache key derivation is a small pure function per level.
+
+### [D-39] Calibration loop with human-gated weight tuning
+**Decision.** Confidence weights and criticality assessment are calibrated against a hand-authored set of `CalibrationCase` records under `config/calibration/cases/`. Each case carries a frozen consolidated requirement, a hand-assigned target priority/criticality, and a rubric. The `calibrate:run` command runs the cases through current weights, judges them with the LLM-as-judge framework ([D-31]), and produces a `CalibrationRun` record. When tuning is warranted, the command proposes adjusted weights in `config/calibration/tuned_weights.yaml`; the consultant explicitly accepts via `calibrate:accept` (mirroring taxonomy lock per [D-20]). Tuned weights override defaults from `config/consolidation.yaml` when present.
+**Rationale.** Scoring will be miscalibrated initially; that's [R-5]. Calibration is the structured response. Reusing the eval framework's LLM-as-judge ([D-31]) keeps the spec coherent. Human-gated acceptance prevents auto-tuned weights from drifting silently — the consultant is the source of truth for "what should be prioritized." Calibration is a regular activity (after first run, after model changes, when the consultant notices systematic miscalibration), not a one-shot.
+**Alternatives.**
+- Auto-accept tuned weights. Rejected: scoring drift becomes invisible; [D-20] parallel.
+- No calibration; document scores as approximate. Rejected: punts on the [R-5] miscalibration risk; review-queue ordering becomes a guess.
+- Continuous calibration via consultant feedback on every reviewed item. Rejected: too heavy a process for an internal tool; mismatch with the assessment's one-shot nature.
+**Trade-offs.** Calibration requires the consultant to author ~50 cases and run the loop. This is real effort. Acceptable: it's the difference between a review queue the consultant can trust and one they have to re-rank by hand.
+
+### [D-40] Cross-cluster reconciliation is its own stage with a priority boost
+**Decision.** Cross-cluster reconciliation runs as Stage 4.5, separate from per-cluster consolidation. It takes all `ConsolidatedRequirement` records from non-archived clusters as input, produces `cross_cluster/conflicts.json` plus sidecar `cross_cluster_annotations.json` per affected cluster, and regenerates `review_queue.json` with a `cross_cluster_boost` (default 0.20) added to participating items' `review_priority`.
+**Rationale.** The problem [OPEN-3] articulated is conflicts between sibling clusters that are missed by bottom-up consolidation; a separate stage is the cleanest place to put logic that requires global-scope inputs. The priority boost is the mechanism by which cross-cluster findings reach the consultant: without it, they sit in a separate artifact and may be overlooked. Reusing the embedding-then-LLM pattern from grouping ([D-34]) keeps the design coherent.
+**Alternatives.**
+- Inline in Stage 4 as a recursive root pass. Rejected: couples within-cluster and cross-cluster logic; cache invalidation becomes harder.
+- A separate command rather than always running as part of `consolidate`. Rejected by [D-43] reasoning: silent skipping is worse than always running with the option to disable via config.
+- No priority boost; just publish findings in a separate artifact. Rejected: cross-cluster findings have higher review value than within-cluster ones (per [OPEN-3] framing) and should be prioritized accordingly. Boost magnitude is calibratable.
+**Trade-offs.** Extra phase to maintain; additional cost (one LLM call per surviving candidate after embedding filter). Acceptable: cost is bounded by `max_candidate_pairs`; cache reuse on stable inputs makes re-runs cheap.
+
+### [D-41] Cross-cluster scope: contradiction and scope_mismatch only
+**Decision.** Stage 4.5 detects only two of the five conflict kinds defined in [D-35]: `contradiction` and `scope_mismatch`. `status_disagreement`, `type_disagreement`, and `version_skew` are explicitly excluded.
+**Rationale.** Same-named concepts in different clusters legitimately differ on status and type. A "user" requirement in the auth cluster and a "user" requirement in the analytics cluster aren't necessarily about the same user; their independent statuses are meaningful, not contradictory. Cross-cluster `version_skew` (same statement made twice in different subsystems at different times) is genuinely unusual and would mostly produce noise. The kinds that DO matter cross-cluster are real disagreements about what the system should do (contradiction) or for whom (scope_mismatch) — these are the kinds where being in different clusters is what makes them interesting.
+**Alternatives.**
+- All five kinds. Rejected: noisy; floods review queue with structural artifacts of clustering rather than real conflicts.
+- Only contradiction. Rejected: scope_mismatch is exactly the kind of subtle cross-subsystem conflict the consultant most wants to know about.
+**Trade-offs.** May miss legitimate cross-cluster status/type/version conflicts. Acceptable: these are rare enough that the consultant can surface them through ad-hoc review of the per-cluster outputs if needed.
+
+### [D-42] Cross-cluster findings are sidecar annotations; per-cluster records remain immutable
+**Decision.** Stage 4.5 does NOT modify `clusters/<cluster>/consolidated/requirements.json` (Stage 4's output). Instead, it writes `clusters/<cluster>/consolidated/cross_cluster_annotations.json` as a sidecar referencing the per-cluster `ConsolidatedRequirement` records that participate in cross-cluster conflicts. Downstream consumers (review queue, report) read both files together.
+**Rationale.** Principle 2 (§1) — immutability of upstream layer outputs — is a core invariant of the design. Allowing Stage 4.5 to mutate Stage 4 outputs would break that invariant for a relatively narrow gain. Sidecar annotations preserve immutability, keep the bidirectional reference intact (annotation→conflict and conflict→annotation), and make re-runs of Stage 4.5 idempotent (overwrite the sidecar without touching the consolidated record).
+**Alternatives.**
+- Mutate per-cluster `requirements.json` directly. Rejected: breaks immutability principle.
+- Push references only in one direction (conflict→record). Rejected: makes "what conflicts does this requirement participate in?" a search rather than a lookup; expensive for the report stage.
+**Trade-offs.** Two files instead of one. Mitigation: review queue generation merges them; consultants who inspect raw files learn the convention quickly.
+
+### [D-43] Cross-cluster reconciliation always runs by default; config-gated for cost
+**Decision.** Stage 4.5 runs as part of every `consolidate` command by default. It can be disabled via `config/consolidation.yaml: cross_cluster.enabled: false` (config-level) or `--no-cross-cluster` (per-invocation). Disabling preserves Stage 4 outputs untouched; no annotations are written; review_queue.json is regenerated without cross-cluster contributions.
+**Rationale.** Cross-cluster findings are the kind of thing easy to forget to run, and forgetting silently produces an inferior review queue. Making it the default protects against that. The config and CLI gates exist for cost-bounded runs (e.g., during prompt iteration on per-cluster consolidation) where cross-cluster cost is wasted.
+**Alternatives.**
+- Always opt-in. Rejected: easy to skip; spec wants the discipline by default.
+- Always runs with no opt-out. Rejected: legitimate iteration scenarios shouldn't pay the full cost every time.
+**Trade-offs.** Default cost is higher than per-cluster-only consolidation. Acceptable: cached candidates and verifications make re-runs cheap once the first run is done.
+
+### [D-44] Hard candidate cap with halt-and-warn
+**Decision.** Stage 4.5's pre-filtering enforces `cross_cluster.max_candidate_pairs` (default 500). If exceeded, the stage halts with a warning rather than proceeding silently. The consultant decides whether to raise the threshold (reducing candidate count) or raise the cap (accepting the cost).
+**Rationale.** A corpus that produces 10,000 candidate pairs is signaling something — either the embedding threshold is too low, or the corpus has many similar-but-distinct requirements that legitimately exist (per-service variants of a pattern). Both situations warrant consultant judgment. Halting is louder than silent expensive runs.
+**Alternatives.**
+- No cap. Rejected: pathological corpora produce runaway cost.
+- Soft cap with sampling. Rejected: introduces randomness; hard to reproduce results.
+- Auto-raise threshold until under cap. Rejected: hides the signal that something is off.
+**Trade-offs.** A first-run halt is disruptive. Acceptable: the warning is informative; the fix (raising threshold) is a one-line config change followed by a re-run, which is cheap because cached embeddings persist.
+
+### [D-45] Report is a deterministic rendering of existing artifacts; no LLM calls
+**Decision.** Stage 5.5 makes zero LLM calls. The report is purely a rendering of artifacts produced by upstream stages. All content — top-N items, landscape, freshness warnings, provenance — is computed from existing files using deterministic logic.
+**Rationale.** The report's job is to *present* what the pipeline already produced, not to generate new analysis. Every interesting judgment (criticality, conflict rationale, cluster summaries) already has an LLM call and provenance elsewhere; replicating that work at report time would duplicate cost and introduce non-determinism. Deterministic rendering means the same inputs always produce the same report, which is essential for "what was true when this report was generated?" questions.
+**Alternatives.**
+- LLM-generated executive summary at report time. Rejected: duplicates work that consolidation already did; introduces non-determinism in the report's headline content.
+- Re-run criticality/confidence at report time. Rejected: those belong to consolidation; re-running them mid-report would mean the report disagrees with `review_queue.json`.
+- A "narrative" section that uses an LLM to synthesize themes. Rejected for v1: nice-to-have; can be added later as an optional section without changing the core. (Out of scope; see [R-25].)
+**Trade-offs.** The report won't have the polished narrative an LLM could synthesize. Acceptable: the audience is the consultant, who is in the best position to synthesize from a structured first-read document.
+
+### [D-46] Reports are always timestamped and never overwritten
+**Decision.** Each `report` invocation writes a new file `reports/<ISO_timestamp>.md` (UTC, filename-safe form). Existing reports are never overwritten. There is no canonical "current" `report.md`.
+**Rationale.** The consultant explicitly chose timestamped reports over git-history-based versioning. Honoring that means every report is a durable snapshot. Reports referencing specific pipeline state at the moment of generation should not be edited or replaced — they're an audit trail of "what we thought at this point."
+**Alternatives.**
+- Single `report.md` overwritten in place, git tracks history. Rejected by the consultant in favor of explicit snapshots. (Was the recommendation; not adopted.)
+- Hybrid: `report.md` current plus `reports/<timestamp>.md` on demand. Rejected: complicates the mental model; the consultant gets the same effect via gitignore discipline (see [R-24]).
+**Trade-offs.** Disk accumulation over many iterations. Mitigation: gitignore by default; commit only meaningful snapshots; see [R-24].
+
+### [D-47] Freshness signals are first-class report content, not afterthoughts
+**Decision.** The Health section of every report computes and surfaces concrete freshness signals: eval freshness per LLM-driven step, calibration staleness vs. consolidation config changes, taxonomy `--from-starting` shortcut detection, and best-effort model pin drift. Warnings appear both in the frontmatter (`freshness_warnings`) and in human-readable form in the Health section.
+**Rationale.** [R-14] flagged that eval discipline is voluntary; the report is the natural place to surface "you skipped eval for this prompt change" warnings. Similar reasoning applies to calibration staleness and taxonomy shortcuts. Making these warnings unmissable (frontmatter + body) closes the gap between "the spec says do this" and "the spec helps you notice when you didn't."
+**Alternatives.**
+- Health as a separate command (`status` or `doctor`). Rejected: easy to skip; the report is where the consultant actually reads.
+- Freshness as warnings in stage output only. Rejected: warnings during pipeline runs scroll past; report warnings persist as artifacts.
+- No freshness signals; trust the consultant's discipline. Rejected: too much hard-won discipline elsewhere in the spec to abandon it here.
+**Trade-offs.** Freshness checks add computation at report time and may produce false positives. Acceptable: computation is local (no LLM calls); false positives are informative not blocking.
+
+### [D-48] Sections are independently authored and toggleable via config
+**Decision.** The four sections (top_queue, landscape, health, provenance) are independent renderers. Each reads its own inputs and produces its own markdown block. The `sections` list in `config/report.yaml` controls which sections run and in what order; the default includes all four.
+**Rationale.** Independence makes the rendering logic small and testable per section, lets the consultant disable sections they don't want (e.g., skip landscape for runs where they've memorized it), and makes future section additions (e.g., a narrative section per [R-25]) straightforward.
+**Alternatives.**
+- Monolithic renderer with the whole report in one function. Rejected: harder to maintain; loses per-section configurability.
+- Fixed section order and presence. Rejected: less flexible; over-prescriptive for an internal tool.
+**Trade-offs.** Per-section state (like the report frontmatter's `counts`) must be assembled before sections run, since multiple sections may use the same data. Acceptable: frontmatter assembly is its own 5.5a phase that runs first.
+
+### [D-49] Archival is a flag, not a directory move
+**Decision.** A cluster is archived by setting `archived: true` on its entry in `clusters/_index.yaml`. Cluster files (`summary.md`, `members.yaml`, `consolidated/*.json`, `cross_cluster_annotations.json`) stay in their current location at `clusters/<name>/`. The archival event captures `archived_at` (ISO timestamp) and `archived_at_versions` (snapshot of `consolidation`, `clustering`, and `taxonomy` config versions at archive time) so the consultant can later answer "what was the pipeline state when this cluster was archived?" without git archaeology.
+**Rationale.** Filesystem moves are tempting for visual separation but break the stability of paths recorded in provenance records (every `ConsolidatedRequirement.cluster_path` would become stale). A flag preserves all existing references. The captured versions are honest about the snapshot nature of archived outputs without forcing freshness recomputation on every report.
+**Alternatives.**
+- Move to `clusters/_archived/<name>/`. Rejected: breaks provenance paths; complicates re-activation.
+- Soft-delete (hide from default tooling, accessible via flag). Rejected: extra machinery for an internal tool; the flag is the soft-delete.
+**Trade-offs.** Active and archived clusters mix in the directory listing. Acceptable: `_index.yaml` is the canonical source of truth; `find clusters/ -maxdepth 1 -type d` is a stale way to enumerate; tooling should read `_index.yaml`.
+
+### [D-50] Archival is manual; no automation triggers it
+**Decision.** Archival happens only when the consultant explicitly edits `_index.yaml`. No automation (e.g., archiving when a git repo is removed from the source system) applies. Unarchival is the symmetric manual operation.
+**Rationale.** Aligns with the spec's pattern of "consultant's discipline, codified" (eval discipline per [D-32], calibration acceptance per [D-39], taxonomy lock per [D-20]). Auto-archival on source-system changes introduces a class of surprises ("my repo was archived because someone toggled a flag upstream") that the consultant would have to reason about. Manual is reversible by trivial edit; automatic decisions need to be discovered and undone.
+**Alternatives.**
+- Auto-archive when a git repo is removed/archived in the source system. Rejected: couples spec to source-system semantics; reversibility is awkward.
+- Manual + automatic suggestion (warn but don't auto-apply). Rejected for v1; future enhancement if assessments grow long-running enough to make manual oversight expensive.
+**Trade-offs.** A consultant working with many sources may forget to archive obviously-defunct clusters. Acceptable: the cost is keeping a few stale clusters in active processing, not a correctness failure; the report's landscape section makes them visible.
+
+### [D-51] Each stage that processes clusters checks the archived flag independently
+**Decision.** Stages 3b (semantic labeling), 3c (hierarchy), 4 (consolidation), 4.5 (cross-cluster reconciliation), and 5.5 (report landscape) each independently read the `archived` flag and apply it. Archived clusters are excluded from:
+- Stage 3b: summary regeneration. The existing `summary.md` stays as-is.
+- Stage 3c: super-cluster proposal candidates.
+- Stage 4: consolidation gathering (parents skip archived child outputs entirely).
+- Stage 4.5: the global pool for embedding pre-filtering and verification.
+- Stage 5.5 (landscape): full rendering. Archived clusters get a de-emphasized minimal entry instead.
+
+**Rationale.** Each stage knows what "archived means" in its own terms (skip vs. de-emphasize vs. exclude-from-pool). A centralized `active_clusters()` helper would either return the same list in all five cases (and miss the report's different rendering) or be parameterized in ways that obscure each stage's actual behavior. Independent checks keep each stage's archival semantics inline with the stage that implements them.
+**Alternatives.**
+- Centralized `active_clusters()` helper. Rejected: hides per-stage variation; e.g., the report needs to see archived clusters for de-emphasized rendering, which the helper would have to expose anyway.
+- File-level marker (e.g., `clusters/<name>/.archived` file) that excludes via glob. Rejected: side-effect-based; bad fit for filesystem-as-DB (Principle 1); harder to reason about.
+**Trade-offs.** Duplication of the "filter out archived" pattern across five stages. Mitigation: the pattern is one line each; the alternative is hiding semantics behind an abstraction that varies per caller anyway.
+
+### [D-52] Member docs of archived clusters stay put
+**Decision.** When a cluster is archived, its members listed in `clusters/<name>/members.yaml` remain members of that cluster. They are NOT released to the unassigned pool. They are NOT re-eligible for assignment to other active clusters via incremental re-clustering. Each normalized doc has exactly one cluster assignment, which is preserved across archival.
+**Rationale.** The simplest possible semantics. "Archived" means the cluster (and everything in it) is no longer in active processing scope. If the consultant wants those docs in an active cluster, they unarchive (cluster comes back with members intact) or do a full re-cluster (`cluster --full`), which discards `_assignments.json` and re-assigns from scratch.
+**Alternatives.**
+- Release members to unassigned pool. Rejected: causes member churn on archive/unarchive cycles; surprises the consultant; can change other clusters' membership.
+- Members stay in archived cluster AND become eligible for re-clustering (dual membership). Rejected: complicates the schema (multi-cluster membership); semantically muddied.
+**Trade-offs.** A doc that legitimately belongs in an active cluster but happens to be in an archived one stays "stuck" until the consultant intervenes (unarchive, or full re-cluster). Acceptable: the consultant who archives a cluster is taking responsibility for it; tooling can surface this via the report (count of "docs in archived clusters" is visible in the Provenance section).
+
 ---
 
 ## 5. Known Risks
@@ -1266,8 +2108,8 @@ Risks we've accepted, with mitigations.
 ### [R-1] Agent-based orchestration appeals; deterministic orchestration was chosen
 The user initially leaned toward agent-based execution. We pushed back: agent orchestration stacks non-determinism, makes debugging hard, burns tokens reasoning about work rather than doing it, and undermines reproducibility — exactly where we need it. Decision is [D-14]. If a user-facing chat interface over the assessment results is desired later, it's a separate layer that reads the artifacts the deterministic pipeline produces.
 
-### [R-2] Cross-cluster requirement reconciliation is incomplete
-Bottom-up consolidation catches conflicts within a subtree but not between distant branches. Root-cluster consolidation does a partial pass over the global requirement set, but quality degrades with breadth of summary. See [OPEN-3].
+### [R-2] Cross-cluster reconciliation is targeted, not exhaustive
+Stage 4.5 ([D-40]) addresses the most valuable form of cross-cluster conflict (sibling-subtree contradictions and scope mismatches between similar-statement requirements) but does not exhaustively compare every pair of requirements across the entire tree. By design ([D-41], [D-44]), it skips `status_disagreement` and `type_disagreement` (legitimate cross-cluster differences) and bounds the candidate pool by embedding similarity. Conflicts that don't surface via embedding similarity (e.g., very different vocabulary describing the same conflict) will not be detected. Acceptable: the trade-off is between cost-bounded findings the consultant can act on and an unbounded "find every possible conflict" that produces too much noise to use.
 
 ### [R-3] Embedding-based cluster assignment will misfile some docs
 A Jira ticket can semantically match repo A but actually be about repo B. Mitigations:
@@ -1279,10 +2121,10 @@ A Jira ticket can semantically match repo A but actually be about repo B. Mitiga
 Tuning prompts during the assessment invalidates cached outputs for that extractor. Cache key includes prompt version (so this is *correct*, not buggy), but it means budget for regeneration on prompt changes. Mitigation: stabilize prompts on a small sample before running across all evidence.
 
 ### [R-5] Confidence and criticality scoring is uncalibrated initially
-First runs will produce a noisy review queue. Plan to hand-label ~50 items after the first full run and tune the scoring before presenting to the client.
+First runs will produce a noisy review queue. The calibration loop ([D-39]) is the structured response: hand-author ~50 `CalibrationCase` records, run `calibrate:run`, review proposed weights, accept via `calibrate:accept`. See also [R-20] (calibration requires consultant labor).
 
-### [R-6] Source-authority weights are guesses
-RFP isn't always more authoritative than Jira if the Jira is from last week and the RFP is from last year. Weights live in `config/` and should be tuned, not trusted by default.
+### [R-6] Source-authority weights are configured guesses
+`config/consolidation.yaml: source_authority` ships with default weights (RFP 1.0, code 0.8, Jira 0.6, etc.) that are reasonable but not validated for any specific client. The defaults affect reconciliation outcomes and the authority-weighted-agreement signal in confidence. Mitigation: the calibration loop ([D-39]) catches systematic mismatch with the consultant's prioritization; authority weights are config, not code; the consultant can tune them mid-assessment with selective cache invalidation per [D-38]. RFP isn't always more authoritative than Jira — recency vs authority trade-offs are encoded in the deterministic ordering of reconciliation rules and the relative weights, both of which are tunable.
 
 ### [R-7] Lossy normalization for complex sources
 Spreadsheets with rich formatting, RFPs with embedded tables/images, and transcripts with speaker overlap may lose information at normalization. Mitigation: preserve original in `evidence/`; surface "normalization warnings" alongside the normalized doc.
@@ -1316,6 +2158,36 @@ Iterating prompts until "all evals pass" risks overfitting: the prompt learns to
 
 ### [R-17] Eval-set staleness
 Eval sets capture a snapshot of representative cases. As the corpus changes (new source types, new content categories), eval coverage degrades. Mitigation: when taxonomy discovery is re-run (new evidence added), `eval:seed` can produce new candidate cases from the latest discovery samples; the consultant decides whether to label and adopt them.
+
+### [R-18] Grouping is the longest-lever single failure in consolidation
+A bad grouping decision (over-merge or under-merge) propagates through everything downstream: conflict detection sees the wrong members, reconciliation produces a wrong resolved statement, scoring is computed against the wrong set. Mitigation: groups are persisted as their own artifact (`groups.json`) for inspection; LLM verification verdicts are recorded with rationale; manual override of grouping is supported by editing `groups.json` and re-running consolidation (cache picks up the new grouping automatically).
+
+### [R-19] Calibration requires consultant labor
+[D-39] mandates hand-authored calibration cases. ~50 cases at ~5–10 minutes each is several hours of focused work. A consultant who skips this step is left with default weights and uncalibrated criticality. Mitigation: the spec explicitly documents this as the cost of trustworthy scoring; the calibration case authoring can be staged (start with 10–15 cases for first calibration, grow over time); the calibration set is reusable across assessments for the same client.
+
+### [R-20] Manual reconciliation overrides go stale silently
+A `config/consolidation_overrides/<group_id>.yaml` authored when a group had three members becomes orphaned when extraction changes the group's membership and thus its `group_id`. Mitigation: stale overrides emit warnings at consolidation time (their `group_id` is no longer present in `groups.json`); the consultant decides whether to update or delete.
+
+### [R-21] Cross-cluster candidate explosion on clustered corpora
+Some corpora (e.g., microservice ecosystems with shared patterns repeated per service) produce many cross-cluster candidate pairs because the same statements legitimately recur. The hard cap ([D-44]) prevents runaway cost but doesn't solve the underlying signal-to-noise problem. Mitigation: raise the embedding threshold; the consultant accepts that very-similar-but-legitimately-distinct requirements aren't real conflicts.
+
+### [R-22] Cross-cluster LLM verification false negatives are invisible
+When the verifier rejects a candidate as `not_a_conflict`, that decision is cached and not revisited unless cache keys change. A genuine but subtle conflict that the LLM missed on first pass will stay missed. Mitigation: the `needs_review` verdict catches the uncertainty cases; the consultant can review `cross_cluster/conflicts.json` for `not_a_conflict` entries when investigating specific concerns; future verifier prompt improvements invalidate the cache and re-verify.
+
+### [R-23] Cross-cluster boost may distort priority for low-criticality items
+A `minor`-criticality cross-cluster conflict gets `0.15 * 0 + 0.20 = 0.20` priority, which could float above a `moderate`-criticality non-conflict item at `0.40 * 0.5 = 0.20`. Whether this is correct is calibration territory. Mitigation: the calibration loop ([D-39]) can include cross-cluster cases; the boost is tunable.
+
+### [R-24] Reports/ accumulates without bound
+Every `report` invocation writes a new timestamped file ([D-46]). Over many iterations of an assessment, `reports/` can accumulate dozens to hundreds of files. Mitigation: the recommended discipline is to gitignore `reports/*.md` except for snapshots the consultant explicitly wants to commit (e.g., before-and-after comparisons around major prompt or model changes). The spec does not enforce a retention policy; the consultant manages it. A future `report:prune --older-than <days>` command could automate this; out of scope for v1.
+
+### [R-25] No narrative synthesis in the report
+[D-45] keeps the report deterministic and rendering-only — no LLM-generated executive summary or theme synthesis. The consultant has to do the synthesis when they write the client deliverable. Acceptable: synthesis is the consultant's value-add; automating it would either be low-quality or non-reproducible. A future optional narrative section could be added without changing the core architecture, gated by an explicit `sections: [... , narrative]` opt-in.
+
+### [R-26] Archived clusters' outputs reflect their archive-time configuration, not current
+Archived clusters' `summary.md` and `consolidated/*.json` files are frozen at archive time ([D-49]). If `config/consolidation.yaml` or prompts change after archival, those outputs no longer reflect current logic. Mitigation: `archived_at_versions` captures the configs in effect at archive time, so the consultant can answer "is this output current?" by comparing versions. The report does NOT automatically warn about this — by [D-50] reasoning, archived means archived; the consultant knows it's a snapshot. If they want current outputs, unarchive.
+
+### [R-27] Docs stuck in archived clusters
+Per [D-52], member docs of an archived cluster stay there. A doc that legitimately belongs in an active cluster but happens to be in an archived one is "stuck" — it doesn't contribute to any active cluster's summary or consolidation. Mitigation: the Provenance section of the report counts "documents in archived clusters" so the consultant can see at a glance whether this matters; unarchival or `cluster --full` are the resolution paths.
 
 ---
 
@@ -1352,14 +2224,36 @@ Unresolved. Each entry: *Question · Why it matters · What would resolve it.*
 - [OPEN-5] consolidation calibration (out of scope here by [D-29]).
 - [OPEN-6] reporting layer (could surface "no recent passing eval" warnings, per [R-14]).
 
-### [OPEN-3] Cross-cluster conflict reconciliation
-**Why it matters.** The most interesting conflicts are often between subsystems (Jira says X for cluster A, RFP says Y for cluster B, code does Z somewhere else). Bottom-up consolidation underweights these.
-**What would resolve it.** Choice between:
-1. A final global pass over all consolidated requirements (expensive; loses cluster context).
-2. Cross-cluster "conflict candidate" detection via embedding similarity across cluster boundaries, with targeted LLM verification.
-3. Accept the limitation; document that distant-branch conflicts are out of scope for the automated pipeline and surface only what root-cluster consolidation finds.
+### ~~[OPEN-3] Cross-cluster conflict reconciliation~~ — RESOLVED
+**Status.** Resolved with Stage 4.5 (Cross-cluster Reconciliation): embedding pre-filtering with conservative threshold, LLM verification, sidecar annotations preserving immutability of per-cluster outputs, configurable priority boost for surfaced findings, hard candidate cap with halt-and-warn.
 
-Default recommendation: option 2.
+**Where the resolution lives:**
+
+Pipeline (§3 Stage 4.5): four phases (embedding pre-filtering, LLM verification, emit annotations, regenerate review queue).
+
+Data shapes (§2.3):
+- `CrossClusterCandidate` — intermediate output of embedding pre-filtering.
+- `CrossClusterConflict` — verified records with explicit verdicts (`confirmed_conflict | not_a_conflict | needs_review`).
+- `CrossClusterAnnotation` — sidecar files referencing per-cluster records (immutability preserved).
+- `ReviewQueueItem` expanded with `cross_cluster_conflicts` field, `cross_cluster_conflict` tag, and `review_priority_components` breakdown.
+- `config/consolidation.yaml: cross_cluster` section — threshold, kinds, cap, boost, enable flag.
+
+Directory layout (§2.2): `cross_cluster/` top-level directory; per-cluster `consolidated/cross_cluster_annotations.json` sidecar.
+
+Decisions:
+- [D-40] Stage 4.5 as separate phase with priority boost (resolves the framing pushback).
+- [D-41] Conservative scope: `contradiction` and `scope_mismatch` only (resolves the noise concern).
+- [D-42] Annotations as sidecar files (resolves immutability tension).
+- [D-43] Always runs by default; config-gated for cost.
+- [D-44] Hard candidate cap with halt-and-warn (resolves cost-runaway concern).
+
+Orchestration (§3 Stage 5): `consolidate` always runs Stage 4.5; `--no-cross-cluster` flag for opt-out.
+
+Risks: [R-2] updated to reflect targeted-not-exhaustive scope; new [R-21] (candidate explosion), [R-22] (verification false negatives), [R-23] (boost may distort low-criticality priority).
+
+**Couples with:**
+- [OPEN-5] consolidation infrastructure — Stage 4.5 reuses the embedding wrapper, the conflict-kind enum, and the calibration framework. The CalibrationCase schema already supports cross-cluster examples per [D-40] rationale.
+- [OPEN-6] reporting layer — the review queue's `tags`, `cross_cluster_conflicts`, and `review_priority_components` are natural surfaces for the report.
 
 ### ~~[OPEN-4] Clustering algorithm specifics~~ — RESOLVED
 **Status.** Resolved by pinning embedding model, defining the structural-phase algorithm in detail, and capturing the supporting decisions.
@@ -1377,21 +2271,93 @@ Default recommendation: option 2.
 
 **Still couples with [OPEN-2]** (eval-set construction): the `summarize_repo` prompt needs its own eval set, with examples that include repos with non-obvious structure ([R-11], [R-13]).
 
-### [OPEN-5] Consolidation schema for requirements — PARTIALLY ADDRESSED
-**Progress.** The extracted `Requirement` schema now carries `type` (functional / quality_attribute / constraint / assumption / change_plan) and `status` (implemented / planned / proposed / abandoned / unknown) — see §2.3 and [D-16]. This gives consolidation the inputs it needs.
-**Still open.** `ConsolidatedRequirement` itself does not yet propagate `type`, `status`, or the `change_plan` tagging. It also does not capture priority hints from the source. A consolidation deep-dive should:
-- Decide whether `ConsolidatedRequirement` carries a single resolved `type` and `status`, or surfaces conflicts in those fields too (e.g., when sources disagree on whether something is implemented).
-- Add fields for source-stated priority where available.
-- Confirm `change_plan` requirements are highlighted in the review queue regardless of confidence — they are first-class output, not derived.
-- Hand-walk 10–20 real requirements through the consolidation logic to validate.
+### ~~[OPEN-5] Consolidation schema for requirements~~ — RESOLVED
+**Status.** Resolved with a full consolidation design: grouping, conflict detection (with explicit kinds), reconciliation rules, deterministic confidence, LLM-emitted criticality on a discrete scale, and a calibration loop. The calibration concern punted from [OPEN-2] via [D-29] is now addressed by [D-39].
 
-### [OPEN-6] Reporting layer
-**Why it matters.** §3 mentions a `report` subcommand but the spec doesn't say what it produces. The consultant's written report is out of scope, but a structured "first read" artifact (top-level summary + landscape map + top-50 review queue items) is useful.
-**What would resolve it.** Decide: is the report a single markdown document, a small static site, or just structured JSON the consultant reads in their editor?
+**Where the resolution lives:**
 
-### [OPEN-7] What to do with archived clusters' content
-**Why it matters.** `archiveCluster` excludes a cluster from summarization and consolidation, but the docs and extractions remain. Should they be visible in search? Excluded from review queue? Useful as historical context?
-**What would resolve it.** A short decision on archival semantics. Default proposal: archived clusters are excluded from summarization, consolidation, and the review queue, but remain readable for context.
+Data shapes (§2.3):
+- `Consolidation configuration` — all knobs in `config/consolidation.yaml`.
+- `RequirementGroup` — persisted between phases for inspectability.
+- `Conflict` — explicit `kind` enum with five values; structured evidence; resolution rationale.
+- `Confidence` — score + signals + weights, fully auditable.
+- `Criticality` — discrete level + numeric mapping + LLM rationale.
+- `ConsolidatedRequirement` — single resolved `type` and `status`; disagreements surface via `conflicts[]`; `change_plan_flag` for filtering.
+- `ReviewQueueItem` — adds `cluster_path` and derived `tags` for filtering.
+- `CalibrationCase` — frozen consolidated requirement + target priority + rubric.
+- `CalibrationRun` — run record + proposed tuned weights.
+
+Pipeline (§3 Stage 4): six phases (gather, group, conflict-detect, reconcile, score, emit) with layered caching ([D-38]).
+
+Decisions:
+- [D-34] Two-stage grouping (embedding pre-grouping + LLM verification).
+- [D-35] Multiple conflict kinds with mixed deterministic/LLM detection.
+- [D-36] Deterministic confidence; LLM only for qualitative parts (resolves the hybrid-confidence pushback).
+- [D-37] Discrete criticality scale; cluster summary as context; change_plan handled via tagging not auto-promotion.
+- [D-38] Layered consolidation caching.
+- [D-39] Calibration loop with human-gated weight tuning (resolves [D-29] punt).
+
+Orchestration (§3 Stage 5): added `calibrate:run` and `calibrate:accept` subcommands.
+
+Risks: [R-5] updated to point at the calibration mechanism; [R-6] expanded to reflect new config layout; new risks [R-18] (grouping is the longest lever), [R-19] (calibration labor), [R-20] (stale manual overrides).
+
+**Couples with:**
+- [OPEN-3] cross-cluster reconciliation — explicitly out of scope here; the consolidation schema supports it when [OPEN-3] is tackled (each `ConsolidatedRequirement` can be input to another consolidation pass at a higher level, including a global root pass).
+- [OPEN-6] reporting layer — review queue tags and calibration freshness are natural surfaces for the report stage.
+
+### ~~[OPEN-6] Reporting layer~~ — RESOLVED
+**Status.** Resolved with Stage 5.5 (Report): timestamped, deterministically rendered markdown documents with four sections (top-N queue, landscape, health, provenance), self-describing frontmatter capturing every input version, and first-class freshness signals that close the loop on voluntary disciplines elsewhere in the pipeline.
+
+**Where the resolution lives:**
+
+Pipeline (§3 Stage 5.5): six phases (frontmatter assembly, top-N rendering, landscape, health/freshness, provenance, write).
+
+Data shapes (§2.3):
+- `Report configuration` — top-N size, freshness thresholds, section toggles, provenance options.
+- `ReportRun` — YAML frontmatter capturing input versions, freshness warnings, and counts; written into every report.
+
+Directory layout (§2.2): `reports/<ISO_timestamp>.md`; `config/report.yaml`.
+
+Decisions:
+- [D-45] Deterministic rendering; no LLM calls (resolves the pushback on the LLM-narrative temptation).
+- [D-46] Always timestamped; never overwritten (consultant's explicit choice over git-history-based versioning).
+- [D-47] Freshness signals are first-class — closes the loop on [R-14] (voluntary eval discipline), calibration staleness, and the [D-19] taxonomy shortcut.
+- [D-48] Sections are independently authored and toggleable via config.
+
+Orchestration (§3 Stage 5): `report` subcommand updated to reference Stage 5.5.
+
+Risks: [R-24] `reports/` accumulates without bound; [R-25] no narrative synthesis (synthesis stays the consultant's job).
+
+**Couples with:**
+- [R-14] eval discipline is voluntary — freshness signals surface skipped evals.
+- [D-19] taxonomy `--from-starting` shortcut — surfaced as a warning so consultants don't forget they used it.
+- Future narrative section ([R-25]) — pluggable via [D-48] section list; out of scope for v1.
+
+### ~~[OPEN-7] What to do with archived clusters' content~~ — RESOLVED
+**Status.** Resolved with explicit archival semantics codified across the spec. The default proposal in this open question (excluded from summarization/consolidation/review queue, readable for context) is honored; the resolution adds precision about the flag mechanism, the captured archive-time versions, per-stage handling, and member-doc fate.
+
+**Where the resolution lives:**
+
+Data shapes (§2.3): `Cluster entry` extended with `archived_at` and `archived_at_versions` fields; archival semantics codified inline.
+
+Pipeline:
+- Stage 3b/3c (§3 Stage 3): non-archived only; archived clusters' summaries frozen.
+- Stage 3d (§3 Stage 3): archival is a manual flag with captured archive-time versions.
+- Stage 4 (§3 Stage 4a): non-archived only; archived child outputs not propagated.
+- Stage 4.5 (§3 Stage 4.5a): archived clusters excluded from the global pool.
+- Stage 5.5 (§3 Stage 5.5c, 5.5e): landscape de-emphasizes archived; provenance counts active vs archived plus docs-in-archived.
+
+Decisions:
+- [D-49] Archival is a flag, not a directory move. Cluster files stay; `archived_at_versions` captures snapshot context.
+- [D-50] Archival is manual; no automation. Aligns with the "consultant's discipline" pattern.
+- [D-51] Each stage checks the flag independently — keeps per-stage semantics inline.
+- [D-52] Member docs stay put on archival; unarchival or `cluster --full` are the resolution paths.
+
+Risks: [R-26] archived outputs are snapshots, not current (no auto-warning, by design); [R-27] docs stuck in archived clusters (visible in report Provenance section).
+
+**Couples with:**
+- [D-28] incremental re-clustering — `cluster --full` is the escape hatch for releasing members from archived clusters.
+- [D-47] freshness signals — by [R-26], archive staleness is deliberately NOT in the freshness signal set; archived means archived.
 
 ### ~~[OPEN-8] Taxonomy validation on real evidence~~ — RESOLVED
 **Status.** Resolved by introducing **Stage 1.5 · Taxonomy Discovery** as a blocking pre-Extract stage. The manual procedure originally proposed was upgraded to an automated, bounded discovery loop with human-reviewed lock.
@@ -1435,6 +2401,29 @@ Default recommendation: option 2.
 - **EvalRun** — A record of one eval invocation: which prompt and model were tested, which cases ran, what verdict each case received, and the aggregate pass/fail. Lives at `config/evals/<step>/runs/<run_id>.json`. See §2.3.
 - **Borderline case** — An eval case whose score falls inside the configured `borderline_band`; does not fail the run but is surfaced for human review. See [D-30] and [D-32].
 - **Eval staleness** — Eval coverage degrading as the corpus changes; addressed by re-seeding cases from updated taxonomy discovery samples. See [R-17].
+- **Requirement group** — A set of extracted requirements that describe the same underlying behavior. Produced by two-stage grouping ([D-34]). One group → one `ConsolidatedRequirement`.
+- **Conflict kind** — Explicit category of disagreement within a group: `contradiction`, `scope_mismatch`, `status_disagreement`, `version_skew`, or `type_disagreement`. See [D-35].
+- **Reconciliation rules** — Ordered tie-breakers for resolving disagreement: manual override → source authority → recency → LLM judgment. See [D-10] and §3 Stage 4d.
+- **Source authority** — Configured weight per source type (`config/consolidation.yaml: source_authority`) used in reconciliation and confidence scoring. Defaults are guesses; tunable via calibration. See [R-19].
+- **Confidence signals** — The five observable inputs to the deterministic confidence formula: source count (log-scaled), authority-weighted agreement, recency spread penalty, statement similarity, conflict penalty. See [D-36].
+- **Criticality level** — One of `critical | important | moderate | minor`, LLM-emitted with cluster summary as context. See [D-37].
+- **Change plan flag** — Derived boolean on `ConsolidatedRequirement`: true if any contributing requirement was `type: change_plan` or `status: planned | proposed`. Used for review-queue tagging but does not auto-promote criticality.
+- **Review priority** — Computed ordering signal for the review queue. Default formula: `criticality_numeric * (1 - confidence)`. Tunable in `config/consolidation.yaml`.
+- **Calibration case** — A hand-authored record (`CalibrationCase`) pairing a frozen consolidated requirement with a target priority/criticality. Used to tune confidence weights and validate criticality assessment. See [D-39].
+- **Calibration loop** — `calibrate:run` (executes cases against current weights, judges them) → review proposed weights → `calibrate:accept` (writes `config/calibration/tuned_weights.yaml`). Human-gated mirror of taxonomy lock. See [D-39].
+- **Tuned weights** — Confidence weights produced by calibration tuning, overriding defaults from `config/consolidation.yaml` when accepted. Live in `config/calibration/tuned_weights.yaml`.
+- **Cross-cluster reconciliation** — Stage 4.5: detects conflicts between consolidated requirements that live in different cluster subtrees and never share a per-cluster consolidation pass. See [D-40].
+- **Cross-cluster candidate** — A pair of consolidated requirements from different clusters whose embedding similarity exceeds the cross-cluster threshold; produced by Stage 4.5a before LLM verification.
+- **Cross-cluster verdict** — One of `confirmed_conflict | not_a_conflict | needs_review`. The third option exists deliberately so LLM uncertainty surfaces for human judgment rather than being forced into a binary.
+- **Cross-cluster annotation** — A sidecar file (`cross_cluster_annotations.json`) per affected cluster, linking that cluster's `ConsolidatedRequirement` records to entries in the top-level `cross_cluster/conflicts.json`. Preserves immutability of Stage 4 outputs ([D-42]).
+- **Cross-cluster boost** — Configurable additive contribution to `review_priority` for items participating in confirmed cross-cluster conflicts. Default 0.20. See [D-40].
+- **Candidate cap** — Hard limit (`cross_cluster.max_candidate_pairs`, default 500) on cross-cluster candidate pairs; exceeding halts Stage 4.5 with a warning. See [D-44].
+- **Report** — Stage 5.5 output: a timestamped markdown document the consultant reads first to decide where to focus. Deterministically rendered from existing pipeline artifacts; no LLM calls. See [D-45].
+- **ReportRun** — The YAML frontmatter block written into each report capturing input versions, counts, and freshness warnings. Makes a report self-describing.
+- **Freshness signal** — A computed indicator that some pipeline artifact may be out of date relative to current configuration: eval freshness (per LLM-driven step), calibration staleness (vs. consolidation config changes), taxonomy `--from-starting` shortcut, model pin drift. Surfaced in the report's Health section. See [D-47].
+- **Report section** — One of the independently authored renderers in Stage 5.5 (`top_queue`, `landscape`, `health`, `provenance`). Configurable via `config/report.yaml: sections`. See [D-48].
+- **Archived cluster** — A cluster with `archived: true` in `clusters/_index.yaml`. Excluded from active summarization, consolidation, cross-cluster reconciliation, and full report rendering. Files remain readable; member docs stay put. See [D-49] through [D-52].
+- **`archived_at_versions`** — Snapshot of `consolidation`, `clustering`, and `taxonomy` config versions captured at archival time. Enables answering "what was the pipeline state when this cluster was archived?" without git archaeology. See [D-49].
 
 ---
 
