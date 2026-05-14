@@ -19,7 +19,7 @@ No LLM calls. The report is purely a rendering of existing artifacts; reproducib
 1. **Frontmatter** — input versions, counts, freshness warnings (see below).
 2. **Handover** — state of play for the next consultant.
 3. **Top-N** — the headline: highest-priority review queue items.
-4. **Landscape** — the cluster tree as a first-orientation view.
+4. **Landscape** — the domain tree as a first-orientation view.
 5. **Health** — freshness signals.
 6. **Provenance** — counts and ingestion timestamps.
 
@@ -40,14 +40,10 @@ inputs:
     embedding_model: nomic-embed-text-v1.5@<revision>
   consolidation:
     version: <config/consolidation.yaml version>
-  cross_cluster:
-    enabled: true
-    candidates_count: 187
-    confirmed_conflicts: 12
-    needs_review: 3
+  cross_domain:
+    findings_count: 12
 
 freshness_warnings:
-  # Populated when freshness signals indicate staleness; empty when clean.
   - id: taxonomy_from_starting
     severity: warn
     message: |
@@ -61,12 +57,12 @@ counts:
     rfp_docs: 7
     spreadsheets: 4
     transcripts: 11
-  normalized: 1887
+  projections: 1887
   extracted:
     requirements: 4321
     interactions: 1209
-    domains: 412
-  clusters:
+    concepts: 412
+  domains:
     total: 35
   consolidated_requirements: 2876
   review_queue_total: 2876
@@ -89,26 +85,26 @@ The section is intended to be readable in isolation — a consultant who has not
 
 ### Top-N section
 
-- Read `review_queue.json` (sorted by `review_priority` descending).
+- Read `domains/root__review-queue.md` (the top-level review queue, sorted by `review_priority` descending).
 - Take the top `top_queue.size` items (default 50 per `config/report.yaml`).
 - For each item, render a structured markdown block containing:
-  - Cluster path and rank in queue.
+  - Domain path and rank in queue.
   - Resolved statement, `type`, `status`, `change_plan_flag`.
   - All conflicts with kind, description, evidence excerpts.
   - Confidence breakdown: score + the five signals + which weights version produced it.
   - Criticality level + rationale (the LLM's one-sentence explanation).
-  - `review_priority_components` (base + boosts + total) so the consultant sees exactly why this item ranked here.
+  - Review priority components (base + boosts + total) so the consultant sees exactly why this item ranked here.
   - Source provenance: one line per contributing source with type, id, date, and excerpt.
-  - Cross-cluster references: links to other affected requirements when `cross_cluster_conflicts` is non-empty.
+  - Cross-domain references: wikilinks to cross-domain findings when applicable.
   - Tags as a compact filter line.
 
 The block is self-contained — the consultant can act on a single item without opening other files.
 
 ### Landscape section
 
-- Read `clusters/_index.yaml` and per-cluster `summary.md` files.
-- Render a tree view of the cluster hierarchy (depth-limited).
-- For each cluster, render: purpose (one line from summary.md), member count, top 3 domains (from extracted domains, deduplicated by alias), top 5 interactions (from extracted interactions, grouped by kind).
+- Read `domains/_index.yaml` and per-domain summary files.
+- Render a tree view of the domain hierarchy (depth-limited).
+- For each domain, render: purpose (one line from summary), member count, top 3 concepts (from extracted concepts, deduplicated by alias), top 5 interactions (from extracted interactions, grouped by kind).
 - This section is read-only orientation; no decisions hang on it.
 
 ### Health section
@@ -170,6 +166,6 @@ provenance:
 
 ## Failure modes
 
-- **Missing inputs.** If `review_queue.json` doesn't exist (consolidate never ran), this stage fails fast with a clear error rather than producing a half-empty report.
+- **Missing inputs.** If `domains/root__review-queue.md` doesn't exist (consolidate never ran), this stage fails fast with a clear error rather than producing a half-empty report.
 - **Stale references in rendered items.** A report rendered now references content_hashes that may change later. Acceptable: the frontmatter pins every input version, so the consultant can reason about what was true at report time even if subsequent edits change things.
 - **Disk accumulation from never-overwritten reports.** Over many iterations, `reports/` grows unboundedly. Mitigation: consultants are encouraged to gitignore `reports/` for routine runs, committing only snapshots that matter.

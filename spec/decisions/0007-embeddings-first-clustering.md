@@ -10,6 +10,6 @@
 - Pure LLM clustering — rejected: non-determinism.
 - Pure embedding clustering with no labels — rejected: opaque.
 
-**Trade-offs accepted.** Embedding-based assignment makes some semantic mistakes (see cluster-structural failure modes and [R-3](../risks.md)).
+**Trade-offs accepted.** Embedding-based assignment makes some semantic mistakes (see domain-structural failure modes and [R-3](../risks.md)).
 
-**Related.** [cluster-structural spec](../specs/cluster-structural/spec.md); [open-questions.md](../open-questions.md) (the consultant has flagged that pure embedding-based clustering may not be trustworthy enough — a future change folder may revise this).
+**Related.** [domain-structural spec](../specs/domain-structural/spec.md); [open-questions.md](../open-questions.md) (the consultant has flagged that pure embedding-based domain assignment may not be trustworthy enough — a future change folder may revise this).

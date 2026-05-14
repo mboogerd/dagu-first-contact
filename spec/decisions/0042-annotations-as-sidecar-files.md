@@ -1,15 +1,15 @@
-# [D-42] Cross-cluster findings are sidecar annotations; per-cluster records remain immutable
+# [D-42] Cross-domain findings are standalone markdown files; per-domain outputs remain immutable
 
-**Status.** Accepted.
+**Status.** Accepted (revised — findings are now markdown files, not JSON sidecars).
 
-**Decision.** The cross-cluster stage does NOT modify `clusters/<cluster>/consolidated/requirements.json`. Instead, it writes `clusters/<cluster>/consolidated/cross_cluster_annotations.json` as a sidecar referencing the per-cluster `ConsolidatedRequirement` records that participate in cross-cluster conflicts. Downstream consumers (review queue, report) read both files together.
+**Decision.** Cross-domain conflict detection (phase 4f of consolidate) does NOT modify per-domain consolidated group files. Instead, it writes `<domain-name>__cross-domain-findings.md` as a standalone markdown file in the domain's folder. Downstream consumers (review queue, report) reference findings via wikilinks.
 
-**Rationale.** Principle 2 — immutability of upstream layer outputs — is a core invariant. Allowing the cross-cluster stage to mutate per-cluster outputs would break that invariant. Sidecar annotations preserve immutability, keep the bidirectional reference intact, and make re-runs idempotent.
+**Rationale.** Principle 2 — immutability of upstream layer outputs — is a core invariant. Findings as standalone files preserve immutability and make them navigable in Obsidian via wikilinks.
 
 **Alternatives considered.**
-- Mutate per-cluster `requirements.json` directly — breaks immutability principle.
-- Push references only in one direction — makes "what conflicts does this requirement participate in?" a search rather than a lookup.
+- Mutate per-domain group files directly — breaks immutability principle.
+- JSON sidecar files (original design) — less navigable in Obsidian; markdown with wikilinks is preferred.
 
-**Trade-offs accepted.** Two files instead of one. Mitigation: review queue generation merges them.
+**Trade-offs accepted.** An extra file per non-leaf domain. Acceptable.
 
-**Related.** [cross-cluster spec](../specs/cross-cluster/spec.md); Principle 2.
+**Related.** [consolidate spec](../specs/consolidate/spec.md); Principle 2.

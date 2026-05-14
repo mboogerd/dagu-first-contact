@@ -1,21 +1,21 @@
 # Embedding (cross-cutting)
 
-Compute and store embeddings for normalized documents and (downstream) for requirement statements during consolidation. Cross-cutting; supports clustering (Stage 3) and consolidation grouping (Stage 4) and cross-cluster reconciliation (Stage 4.5).
+Compute and store embeddings for projection outputs and (downstream) for requirement statements during consolidation. Cross-cutting; supports domain assignment (Stage 3) and consolidation grouping (Stage 4).
 
 **Phase.** Cross-cutting (no single pipeline stage owns it).
 
-**Input → Output.** `normalized/<source>/<id>.md` → `normalized/<source>/<id>.embedding.json`.
+**Input → Output.** `projections/<source>/<id>/<projection>/<output>.md` → co-located `.embedding.json` sidecar.
 
 ---
 
 ## Behavior
 
-Every `NormalizedDoc` has a sidecar embedding file at `<source_id>.embedding.json` containing the vector and its provenance.
+Every projection output has a sidecar embedding file co-located in the same directory, containing the vector and its provenance.
 
 The embedding worker:
 
-1. Reads the normalized doc.
-2. Computes the appropriate prefix for the task (`clustering: ` for clustering use; `grouping: ` for consolidation grouping; family-specific).
+1. Reads the projection output.
+2. Computes the appropriate prefix for the task (`clustering: ` for domain assignment use; `grouping: ` for consolidation grouping; family-specific).
 3. Calls the pinned embedding model.
 4. Writes the sidecar.
 
@@ -25,13 +25,26 @@ Downstream stages **read** sidecars; they don't call the embedding model directl
 
 ## Data shapes
 
-### Embedding sidecar (`<source_id>.embedding.json`)
+### Embedding sidecar
+
+Sidecar files co-locate with their projection output:
+
+```
+projections/<source>/<id>/<projection>/
+├── <output>.md
+├── <output>.embedding.json                  ← default prefix (clustering:)
+└── <output>.embedding.grouping.json         ← alternate prefix
+```
+
+When only one prefix is in use (the common case), the prefix suffix is omitted and the file is named `<output>.embedding.json` (keyed to the default `clustering: ` prefix). Multiple prefixes coexist by encoding the prefix in the filename.
 
 ```json
 {
   "source_type": "jira",
   "source_id": "PROJ-123",
-  "content_hash": "<NormalizedDoc.content_hash>",
+  "projection": "jira:bulk_download",
+  "projection_version": "<hash>",
+  "content_hash": "<projection output content_hash>",
   "embedding_model": {
     "name": "nomic-embed-text-v1.5",
     "revision": "<HF commit SHA>",
@@ -54,7 +67,7 @@ The embedding sidecar is re-computed when any of `content_hash`, `embedding_mode
 
 ## Configuration
 
-In `config/clustering.yaml` (the embedding wrapper shares config with clustering since they're so tightly coupled):
+In `config/clustering.yaml` (the embedding wrapper shares config with domain assignment since they're tightly coupled):
 
 ```yaml
 embedding:
@@ -72,14 +85,12 @@ The GGUF file is **vendored** into `models/embeddings/` for reproducibility. The
 
 ## Multiple prefixes per doc
 
-A normalized doc may need embeddings with different prefixes for different consumers:
+A projection output may need embeddings with different prefixes for different consumers:
 
-- `clustering: ` for [cluster-structural](../cluster-structural/spec.md).
-- `grouping: ` for [consolidate](../consolidate/spec.md) and [cross-cluster](../cross-cluster/spec.md).
+- `clustering: ` for [domain-structural](../domain-structural/spec.md).
+- `grouping: ` for [consolidate](../consolidate/spec.md).
 
-The current design stores **one sidecar per (doc, prefix)** pair: the file path includes the prefix when it's not the default. The default sidecar (`<source_id>.embedding.json`) uses `clustering: `; alternates are at `<source_id>.embedding.<prefix>.json`.
-
-[NEEDS CLARIFICATION: The v0 spec was silent on how multiple prefixes per doc are stored. Confirm this approach before implementation, or pick a different convention.]
+The sidecar naming convention handles this: the default sidecar (`<output>.embedding.json`) uses the `clustering: ` prefix; alternates use `<output>.embedding.<prefix>.json`.
 
 ## Related decisions
 

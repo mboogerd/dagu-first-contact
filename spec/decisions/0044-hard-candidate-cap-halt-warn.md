@@ -2,7 +2,7 @@
 
 **Status.** Accepted.
 
-**Decision.** The cross-cluster pre-filtering enforces `cross_cluster.max_candidate_pairs` (default 500). If exceeded, the stage halts with a warning rather than proceeding silently. The consultant decides whether to raise the threshold (reducing candidate count) or raise the cap (accepting the cost).
+**Decision.** The cross-domain pre-filtering enforces `cross_domain.max_candidate_pairs` (default 500). If exceeded, the stage halts with a warning rather than proceeding silently. The consultant decides whether to raise the threshold (reducing candidate count) or raise the cap (accepting the cost).
 
 **Rationale.** A corpus that produces 10,000 candidate pairs is signaling something. Both situations (low threshold, or many legitimately similar requirements) warrant consultant judgment. Halting is louder than silent expensive runs.
 
@@ -13,4 +13,4 @@
 
 **Trade-offs accepted.** A first-run halt is disruptive. Acceptable: the warning is informative; the fix (raising threshold) is a one-line config change followed by a re-run, which is cheap because cached embeddings persist.
 
-**Related.** [cross-cluster spec](../specs/cross-cluster/spec.md); [R-21](../risks.md).
+**Related.** [consolidate spec](../specs/consolidate/spec.md); [R-21](../risks.md).

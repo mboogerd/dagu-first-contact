@@ -2,14 +2,14 @@
 
 **Status.** Accepted.
 
-**Decision.** Extractors are not restricted to normalized docs. When `normalization_kind: curated_summary`, extractors MAY read the underlying `evidence/<source_type>/<source_id>/` for additional detail (e.g., requirement extraction from git reads the curated summary AND may consult specific code files referenced therein).
+**Decision.** Extractors are not restricted to projection outputs. When a projection's contract declares that evidence access is expected, extractors MAY read the underlying `evidence/<source_type>/<source_id>/` for additional detail (e.g., requirement extraction from git reads the `repo_summary` projection output AND may consult specific code files referenced therein).
 
-**Rationale.** Clustering needs a uniform, low-fidelity representation (the summary). Extraction needs high-fidelity, source-native evidence (the code). Forcing one shape on both wastes signal. Honest about the asymmetry.
+**Rationale.** Domain assignment needs a uniform, low-fidelity representation (the summary). Extraction needs high-fidelity, source-native evidence (the code). Forcing one shape on both wastes signal. Honest about the asymmetry.
 
 **Alternatives considered.**
-- Only normalized docs are visible downstream — requirements extraction from a 500-word repo summary loses too much.
+- Only projection outputs are visible downstream — requirements extraction from a 500-word repo summary loses too much.
 - Mandate raw access for all extractors — over-engineering for sources that are already curated.
 
 **Trade-offs accepted.** Extractors that consult `evidence/` are no longer purely source-agnostic. Mitigation: the asymmetry is bounded to git in v1.
 
-**Related.** [extract spec](../specs/extract/spec.md); [D-22](0022-git-repo-curated-summary.md).
+**Related.** [extract spec](../specs/extract/spec.md); [D-49](0049-projection-primitive.md).

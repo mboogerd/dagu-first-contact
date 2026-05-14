@@ -1,28 +1,28 @@
 # Consolidate (Stage 4)
 
-Group extracted requirements per cluster, surface and resolve conflicts with explicit kinds, and score for human review priority. Produce a ranked review queue.
+Group extracted requirements per domain, surface and resolve conflicts with explicit kinds, detect cross-domain conflicts during bottom-up traversal, and score for human review priority. Produce a ranked review queue.
 
 **Phase.** Stage 4.
 
-**Input → Output.** `clusters/` + `extracted/` + `config/consolidation.yaml` → `clusters/**/consolidated/` + `review_queue.json`.
+**Input → Output.** `domains/` + `extracted/` + `config/consolidation.yaml` → `domains/**/<domain-name>__groups/` + `domains/**/<domain-name>__review-queue.md` + `domains/root__review-queue.md`.
 
 ---
 
 ## Approach
 
-Runs **bottom-up** through the cluster tree. At each cluster, six phases execute in sequence; child-cluster outputs propagate upward as inputs.
+Runs **bottom-up** through the domain tree. At each domain, seven phases execute in sequence; child-domain outputs propagate upward as inputs.
 
 ### 4a · Gather
 
-- For each cluster, collect all `Requirement` records from member docs (via `extracted/<source_type>/<source_id>/requirements.json`).
-- Collect already-consolidated requirements from child clusters (each propagates upward as a single record carrying its own `sources` and `conflicts`).
+- For each domain, collect all `Requirement` records from member docs (via `extracted/<source_type>/<source_id>/requirements.json`).
+- Collect already-consolidated requirements from child domains (each propagates upward as a single record carrying its own `sources` and `conflicts`).
 
 ### 4b · Group (two-stage)
 
 **Pre-grouping (deterministic):**
 
 - Each requirement gets an embedding via the [embedding wrapper](../embedding/spec.md), with the `clustering: ` prefix replaced by a `grouping: ` prefix (recorded in the embedding sidecar). Embeddings are content-hash cached.
-- Compute pairwise cosine similarity within the cluster's requirement set; build candidate groups as connected components where every edge ≥ `grouping.embedding_threshold` (default 0.78).
+- Compute pairwise cosine similarity within the domain's requirement set; build candidate groups as connected components where every edge >= `grouping.embedding_threshold` (default 0.78).
 - Singletons (requirements with no above-threshold neighbors) become singleton candidates.
 
 **LLM verification:**
@@ -32,7 +32,7 @@ Runs **bottom-up** through the cluster tree. At each cluster, six phases execute
 - Verification call cached on `hash(sorted(member_content_hashes) + prompt_version + model)`.
 - `config/consolidation.yaml: grouping.llm_verification: false` is an escape hatch that skips verification and uses pre-groups directly (useful for cost-bounded re-runs; recorded in group provenance).
 
-Output: `clusters/<cluster>/consolidated/groups.json` with one `RequirementGroup` record per group.
+Output: per-`RequirementGroup` markdown files under `domains/<path>/<domain-name>__groups/`.
 
 ### 4c · Conflict detection
 
@@ -40,17 +40,19 @@ Per group, detect all applicable conflict kinds:
 
 **Deterministic detections** (cheap, run first):
 
-- `status_disagreement`: members have ≥2 distinct `status` values.
-- `type_disagreement`: members have ≥2 distinct `type` values.
+- `status_disagreement`: members have >=2 distinct `status` values. **Suppressed** when the difference is explained by participants' projections' intents (e.g., one source has `intent: planned` and `status: planned`, another has `intent: implemented` and `status: implemented` — this is expected, not a conflict).
+- `type_disagreement`: members have >=2 distinct `type` values.
 - `version_skew` (candidate): `source_date` spread exceeds a threshold (default 180 days) AND members have non-trivial statement variation.
 
-**LLM-driven detections** (called only when the group has ≥2 members):
+**LLM-driven detections** (called only when the group has >=2 members):
 
 - `contradiction`: explicit negation or mutual exclusivity between statements.
 - `scope_mismatch`: agreement on behavior with disagreement on scope/applicability.
 - Confirms or rejects candidate `version_skew` cases.
 
 A group can have multiple conflicts of different kinds. Each conflict carries explicit `evidence` (the contributing requirements with verbatim excerpts). LLM-driven detection is a single call per group with a structured-output schema enumerating all conflict kinds found; cached on group inputs.
+
+**Intent-based suppression rule:** suppress `status_disagreement` when the set of source `intent` values is `{implemented, planned}` or `{implemented, proposed}` or `{planned, proposed}` and the resolved statuses align with those intents. See [D-50].
 
 ### 4d · Reconciliation
 
@@ -90,23 +92,36 @@ Clamped to [0, 1]. Signals and weights are recorded in the `Confidence` object f
 
 **Criticality (LLM, cached).**
 
-- Call the `assess_criticality` prompt with the resolved statement and the cluster's `summary.md` as context.
+- Call the `assess_criticality` prompt with the resolved statement and the domain's summary as context.
 - The LLM emits one of `critical | important | moderate | minor` (the fixed scale) plus a one-sentence rationale.
 - The numeric value is looked up from `config/consolidation.yaml: criticality.numeric`; the LLM does not emit floats.
-- Cached on `hash(statement + cluster_summary_hash + prompt_version + model)`.
+- Cached on `hash(statement + domain_summary_hash + prompt_version + model)`.
 
 **Review priority (deterministic).**
 
 - Computed from the formula in `config/consolidation.yaml: review_priority.formula`. Default: `criticality_numeric * (1 - confidence.score)` + optional `change_plan_boost`.
 - The combination favors items that are both critical AND uncertain — exactly the cases worth a human's time.
 
-### 4f · Emit
+### 4f · Cross-domain findings (at non-leaf domains)
 
-- Write `clusters/<cluster>/consolidated/requirements.json` (list of `ConsolidatedRequirement`).
-- Write `clusters/<cluster>/consolidated/review_queue.json` (cluster-local queue, sorted by `review_priority`).
-- Propagate `ConsolidatedRequirement` records upward; the parent cluster's `gather` will treat each as a single source.
+At each non-leaf domain, after gathering children's consolidated outputs, an additional pass detects `contradiction` and `scope_mismatch` conflicts **between the children's consolidations**:
 
-After all clusters: merge all cluster-local queues into top-level `review_queue.json`, sorted by `review_priority` descending, with `tags` derived (see below).
+- For each pair of child domains, compare their consolidated requirements using the same embedding pre-filtering and LLM verification as within-domain conflict detection.
+- Findings land in the **lowest common ancestor** domain's folder as `<domain-name>__cross-domain-findings.md`.
+- For findings whose participants don't share a non-root ancestor, findings land at `domains/root__cross-domain-findings.md` (the root is materialized as a real domain).
+- Cross-domain findings carry a `cross_domain_boost` (default 0.20) applied to the participating items' review priority.
+- The boost is a domain-local concept: applied when a parent's review queue rolls up child queues, weighted by where the finding sits in the tree.
+
+Scope: only `contradiction` and `scope_mismatch`. `status_disagreement`, `type_disagreement`, and `version_skew` are excluded because same-named concepts in different domains legitimately differ on these dimensions.
+
+### 4g · Emit
+
+- Write per-`RequirementGroup` markdown files under `domains/<path>/<domain-name>__groups/<domain-name>__group-NNNN.md`. Each requirement within a group is a `##` section with a stable heading ID like `req-PROJ-123-0` so block references work: `[[<domain-name>__group-NNNN#req-PROJ-123-0]]`.
+- Group frontmatter carries the group's resolved type/status/criticality/confidence and conflict summary.
+- Write `<domain-name>__review-queue.md` as a markdown table, with rows linked via wikilink to the group sections. One per domain; recursive roll-up — a parent's review queue absorbs its children's, weighted by child-domain centrality.
+- Write cross-domain findings markdown at non-leaf domains.
+- The top-level review queue lives at `domains/root__review-queue.md`. No separate top-level `reviewqueue.json`.
+- Propagate `ConsolidatedRequirement` records upward; the parent domain's `gather` will treat each as a single source.
 
 ## Caching
 
@@ -114,7 +129,7 @@ Consolidation is cached at three levels:
 
 - **Group-level:** grouping result cached on member content hashes + grouping config.
 - **Conflict-level:** conflict detection cached on group inputs.
-- **Criticality-level:** criticality cached on statement + cluster summary hash.
+- **Criticality-level:** criticality cached on statement + domain summary hash.
 
 Re-running consolidation when nothing has changed is near-free; changing `config/consolidation.yaml` invalidates the relevant levels selectively. See [D-38].
 
@@ -129,8 +144,6 @@ grouping:
   min_group_size: 1                # singletons (one source) are valid groups
 
 source_authority:
-  # Used in reconciliation tie-breaking and in confidence's authority-weighted-agreement signal.
-  # Values are unitless weights; only relative magnitude matters.
   rfp: 1.0
   spreadsheet: 0.7
   jira: 0.6
@@ -163,161 +176,96 @@ criticality:
 review_priority:
   formula: "criticality_numeric * (1 - confidence)"
   change_plan_boost: 0.0
-  cross_cluster_boost: 0.20        # applied by cross-cluster stage; see ../cross-cluster/spec.md
+  cross_domain_boost: 0.20
+
+cross_domain:
+  embedding_threshold: 0.85
+  detect_kinds: [contradiction, scope_mismatch]
+  max_candidate_pairs: 500
 ```
 
 ## Data shapes
 
-### RequirementGroup (`clusters/<cluster>/consolidated/groups.json`)
+### RequirementGroup markdown (`domains/<path>/<domain-name>__groups/<domain-name>__group-NNNN.md`)
 
-```json
-{
-  "group_id": "<cluster>:<index>",
-  "cluster_path": "clusters/financial-domain/payments-service",
-  "members": [
-    {
-      "requirement_id": "<from extracted/.../requirements.json>",
-      "source_id": "...",
-      "source_type": "jira",
-      "source_date": "2026-02-14",
-      "statement": "...",
-      "type": "functional",
-      "status": "planned"
-    }
-  ],
-  "grouping": {
-    "embedding_similarity_min": 0.81,
-    "embedding_similarity_mean": 0.86,
-    "llm_verified": true,
-    "llm_verdict": "confirm | split | reject",
-    "llm_split_reason": null,
-    "verification_model": "<pinned id>",
-    "verification_prompt_version": "<hash>"
-  }
-}
+```yaml
+---
+group_id: "<domain>:NNNN"
+domain_path: "domains/financial-domain/payments-service"
+type: functional
+status: implemented
+criticality: important
+criticality_rationale: "Core payment processing is central to the domain's purpose."
+confidence: 0.62
+change_plan_flag: false
+conflicts:
+  - kind: status_disagreement
+    description: "Sources disagree on implementation status."
+review_priority: 0.42
+---
+
+## req-PROJ-123-0
+
+**Statement.** The system must process refunds within 24 hours.
+
+**Source.** `jira` / `PROJ-123` / 2026-02-14
+**Excerpt.** > "Refund processing must complete within 24 hours of approval"
+**Type.** functional | **Status.** implemented
+
+---
+
+## req-rfp-doc-12-3
+
+**Statement.** Refund processing shall not exceed one business day.
+
+**Source.** `rfp` / `doc-12` / 2026-01-10
+**Excerpt.** > "All refund operations shall complete within one business day"
+**Type.** functional | **Status.** proposed
 ```
 
-### Conflict (embedded in `ConsolidatedRequirement.conflicts[]`)
+Each requirement within a group has a stable `## req-<source-id>-<index>` heading so wikilinks resolve: `[[payments-service__group-0001#req-PROJ-123-0]]`.
 
-A group can have zero or more conflicts. Conflicts have explicit kinds.
+### Review queue markdown (`domains/<path>/<domain-name>__review-queue.md`)
 
-```json
-{
-  "kind": "contradiction | scope_mismatch | status_disagreement | version_skew | type_disagreement",
-  "description": "<short human-readable summary>",
-  "evidence": [
-    {"requirement_id": "...", "excerpt": "<verbatim>", "stance": "must support X"},
-    {"requirement_id": "...", "excerpt": "<verbatim>", "stance": "must not support X"}
-  ],
-  "detected_by": "deterministic | llm | both",
-  "resolution": {
-    "applied_rule": "manual_override | source_authority | recency | llm_judgment",
-    "rationale": "<human-readable explanation>",
-    "rationale_by": {"model": "...", "prompt_version": "..."}
-  }
-}
+A markdown table with rows linked to group sections:
+
+```markdown
+# payments-service — Review Queue
+
+| # | Priority | Statement | Type | Criticality | Confidence | Conflicts | Group |
+|---|----------|-----------|------|-------------|------------|-----------|-------|
+| 1 | 0.62 | The system must process refunds... | functional | important | 0.62 | status_disagreement | [[payments-service__group-0001]] |
+| 2 | 0.45 | ... | ... | ... | ... | ... | [[payments-service__group-0002]] |
 ```
 
-### Confidence (embedded in `ConsolidatedRequirement.confidence`)
+Parent domain review queues recursively absorb their children's queues, weighted by child-domain centrality.
 
-```json
-{
-  "score": 0.62,
-  "signals": {
-    "source_count": 4,
-    "authority_weighted_agreement": 0.78,
-    "recency_spread_days": 412,
-    "recency_spread_penalty": 0.10,
-    "statement_similarity": 0.74,
-    "conflict_present": true,
-    "conflict_penalty": 0.20
-  },
-  "weights_version": "<config/consolidation.yaml version>",
-  "formula_version": "<config/consolidation.yaml version>"
-}
+### Cross-domain findings (`domains/<path>/<domain-name>__cross-domain-findings.md`)
+
+```markdown
+# financial-domain — Cross-Domain Findings
+
+## Finding 1: contradiction between payments-service and checkout-experience
+
+**Kind.** contradiction
+**Participants.**
+- [[payments-service__group-0042#req-PROJ-456-0]]: "System MUST enforce 3DS for all transactions"
+- [[checkout-experience__group-0017#req-rfp-doc-12-5]]: "3DS is optional for transactions under EUR 30"
+
+**Description.** Direct contradiction on 3DS enforcement scope.
+**Rationale.** <LLM explanation>
 ```
 
-Confidence is a **deterministic** function of `signals` and `weights`. The same inputs always produce the same score. The LLM is not consulted for the score itself; it is consulted only for the qualitative parts of `Conflict` (description, resolution rationale).
+### Tags
 
-### Criticality (embedded in `ConsolidatedRequirement.criticality`)
-
-```json
-{
-  "level": "critical | important | moderate | minor",
-  "numeric": 0.70,
-  "rationale": "<one-sentence explanation from the LLM>",
-  "assessed_by": {
-    "model": "<pinned reasoning model>",
-    "prompt_version": "<hash>"
-  }
-}
-```
-
-### ConsolidatedRequirement (`clusters/<cluster>/consolidated/requirements.json`)
-
-```json
-{
-  "id": "<cluster>:<index>",
-  "group_id": "<RequirementGroup.group_id>",
-
-  "statement": "<resolved canonical statement>",
-  "type": "<resolved single value from the type taxonomy>",
-  "status": "<resolved single value from the status taxonomy>",
-
-  "sources": [
-    {"requirement_id": "...", "source_id": "...", "source_type": "...",
-     "source_date": "...", "excerpt": "<verbatim>"}
-  ],
-
-  "conflicts": [
-    { "...": "<Conflict>" }
-  ],
-  "change_plan_flag": true,
-
-  "confidence": { "...": "<Confidence>" },
-  "criticality": { "...": "<Criticality>" },
-  "review_priority": 0.42,
-
-  "resolved_by": {
-    "model": "<pinned reasoning model>",
-    "prompt_version": "<hash>"
-  }
-}
-```
-
-Resolution rules:
-
-- `statement` is the canonical resolved text. If a single source dominated (per reconciliation rules), it's that source's statement (verbatim or lightly normalized); if the LLM produced a synthesis, the synthesis text and its provenance are recorded under the relevant `Conflict.resolution`.
-- `type` and `status` are **single resolved values**. Disagreement among sources surfaces in `conflicts[]` with kinds `type_disagreement` or `status_disagreement` — the resolved value is in the top-level fields; the disagreement remains visible.
-- `change_plan_flag` is a derived convenience flag, true when any contributing requirement had `type: change_plan` OR `status: planned | proposed`. The review queue treats this flag as a tagging signal.
-
-### ReviewQueueItem (`review_queue.json`)
-
-A flat sortable list, sorted descending by `review_priority`. Same shape as `ConsolidatedRequirement` plus location and a short tag set for filtering. Cross-cluster conflicts and the `cross_cluster_boost` are folded in by [cross-cluster](../cross-cluster/spec.md) at queue-generation time.
-
-```json
-{
-  "cluster_path": "clusters/financial-domain/payments-service",
-  "tags": ["change_plan", "type_disagreement", "borderline_criticality", "cross_cluster_conflict"],
-  "cross_cluster_conflicts": ["cc-conf-0007"],
-  "review_priority_components": {
-    "base": 0.42,
-    "change_plan_boost": 0.00,
-    "cross_cluster_boost": 0.20,
-    "total": 0.62
-  },
-  "...": "<all ConsolidatedRequirement fields>"
-}
-```
-
-**Tags** are derived flags useful for filtering the review queue without recomputing:
+Tags are derived flags surfaced in the review queue for filtering:
 
 - `change_plan` — `change_plan_flag` is true.
 - `<conflict_kind>` — one tag per distinct `conflict.kind` present.
 - `low_confidence` — `confidence.score < 0.4`.
-- `borderline_criticality` — criticality is within the borderline band defined in `config/consolidation.yaml`.
-- `singleton` — group has exactly one source (no cross-source corroboration).
-- `cross_cluster_conflict` — item participates in at least one verified `CrossClusterConflict`.
+- `borderline_criticality` — criticality is within the borderline band.
+- `singleton` — group has exactly one source.
+- `cross_domain_finding` — item participates in at least one cross-domain finding.
 
 ## Related decisions
 
@@ -329,6 +277,7 @@ A flat sortable list, sorted descending by `review_priority`. Same shape as `Con
 - [D-36](../../decisions/0036-deterministic-confidence.md) deterministic confidence.
 - [D-37](../../decisions/0037-discrete-criticality-scale.md) discrete criticality scale.
 - [D-38](../../decisions/0038-layered-consolidation-caching.md) layered caching.
+- [D-50](../../decisions/0050-source-declared-intent.md) source-declared intent (status_disagreement suppression).
 
 ## Related risks
 
@@ -339,10 +288,10 @@ A flat sortable list, sorted descending by `review_priority`. Same shape as `Con
 
 ## Failure modes
 
-- **Cross-cluster conflicts missed at this stage.** Bottom-up consolidation only sees one subtree at a time; conflicts between distant branches are not detected here. [cross-cluster](../cross-cluster/spec.md) addresses this.
+- **Cross-domain conflicts limited to parent-child views.** The bottom-up traversal detects conflicts between sibling domains at each tree level; conflicts between distant branches (cousins) that don't share an immediate parent only surface at the root. Acceptable: the root's cross-domain findings catch these.
 - **Grouping over-merges.** Embedding pre-grouping followed by LLM `confirm` can still merge requirements that share vocabulary but differ in scope. Mitigation: LLM verification's `split` outcome is the primary defense; `scope_mismatch` conflict detection catches surviving cases.
 - **Grouping under-merges.** Paraphrased equivalents fall below the embedding threshold and never enter LLM verification. Partial mitigation: threshold defaults at 0.78 are conservative; lowering increases LLM verification cost but improves recall.
-- **Criticality miscalibration on niche clusters.** A cluster with very narrow scope may have its critical items rated `moderate` because the LLM lacks domain context. Mitigation: `assess_criticality` prompt anchors to the cluster summary. (Calibration is deferred; see open questions.)
-- **Confidence weights mis-tuned.** Default weights are guesses. Accepted in v1; the consultant interprets review-queue ordering as a starting point, not a ranked answer.
-- **LLM-emitted criticality drift across model versions.** A model upgrade can shift the distribution of criticality levels. Mitigation: criticality cache key includes the model id.
+- **Criticality miscalibration on niche domains.** A domain with very narrow scope may have its critical items rated `moderate` because the LLM lacks domain context. Mitigation: `assess_criticality` prompt anchors to the domain summary.
+- **Confidence weights mis-tuned.** Default weights are guesses. Accepted in v1.
 - **Manual overrides go stale.** An override authored in iteration 3 may no longer match the resolved group in iteration 12 (membership changed). Mitigation: overrides are keyed on `group_id`, which is content-derived; when the group changes, the override stops matching and a warning is emitted.
+- **Candidate explosion in cross-domain pass.** A corpus with many similar requirements across domains can produce thousands of candidate pairs. Mitigation: hard cap (`max_candidate_pairs`); the stage halts with a warning if exceeded.

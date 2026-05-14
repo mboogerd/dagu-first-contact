@@ -1,10 +1,10 @@
 # Extract (Stage 2)
 
-Derive structured information of interest (requirements, interactions, domains) from normalized docs.
+Derive structured information of interest (requirements, interactions, concepts) from projection outputs.
 
 **Phase.** Stage 2.
 
-**Input → Output.** `normalized/` + `config/taxonomy.locked.yaml` → `extracted/`.
+**Input → Output.** `projections/` + `config/taxonomy.locked.yaml` → `extracted/`.
 
 **Prerequisite.** `config/taxonomy.locked.yaml` MUST exist. This stage refuses to run otherwise. The locked taxonomy supersedes the enum values defined below, which serve as the **starting taxonomy** (the floor).
 
@@ -12,22 +12,34 @@ Derive structured information of interest (requirements, interactions, domains) 
 
 ## Approach
 
-Three source-agnostic extractors run independently per document:
+Three source-agnostic extractors run independently per projection output:
 
 1. **`extract_requirements`** — produces `Requirement` rows. Captures `type` (functional / quality_attribute / constraint / assumption / change_plan) and `status` (implemented / planned / proposed / abandoned / unknown). Status MUST be set per source; the extractor uses `source_type` and source-specific cues as context to infer status (e.g., closed Jira ticket → likely `implemented` or `abandoned` depending on resolution; RFP statement → likely `proposed` or `planned`).
 
 2. **`extract_interactions`** — produces `Interaction` rows for **runtime topology only**. Captures `kind`, `participants` (with explicit `bidirectional` flag when direction is unclear), `endpoint` (when available; degrades to service-level when not), and `evidence_strength` (observed / documented / inferred). Human collaboration, team ownership, and build-time-only dependencies are **out of scope** and MUST NOT be emitted.
 
-3. **`extract_domains`** — produces `Domain` rows of two kinds: `business_domain` and `technical_domain`. Both kinds may appear from the same source; the same concept may legitimately appear as both kinds with separate entries. Aliases are captured at extraction time to support consolidation merging.
+3. **`extract_concepts`** — produces `Concept` rows of two kinds: `business_concept` and `technical_concept`. Both kinds may appear from the same source; the same concept may legitimately appear as both kinds with separate entries. Aliases are captured at extraction time to support consolidation merging.
 
 Each extractor:
 
 - Has its own prompt template in `config/prompts/` with a version hash recorded in the template's frontmatter (see [orchestration spec](../orchestration/spec.md) for how prompt versions feed cache keys).
-- Reads the full `NormalizedDoc`; `source_type` from the frontmatter is *context*, not *control flow*.
+- Reads the full projection output; `source_type` from the frontmatter is *context*, not *control flow*.
 - Produces structured JSON via provider tool-calling, validated against the schemas below.
-- Extractors MAY consult the underlying `evidence/<source_type>/<source_id>/` when `normalization_kind: curated_summary` (currently only git). See [D-23].
+- Each projection output is treated as an independent input. A single piece of evidence with multiple projections produces multiple extraction runs (one per projection output).
 
-Every extraction call goes through the LLM cache. Cache key: `hash(prompt_text + doc_content_hash + model_id + schema + locked_taxonomy_version)`. A new taxonomy lock invalidates extraction cache automatically.
+### Raw evidence access
+
+Extractors MAY consult the underlying `evidence/<source_type>/<source_id>/` when the projection's contract declares that evidence access is expected (e.g., `git:repo_summary` carries enough information that the extractor may want to dig into the underlying code). See [D-23].
+
+### Status inference and intent
+
+`extract_requirements` honors the `intent` and `default_status` frontmatter fields:
+
+- When `intent` is `implemented | planned | proposed`, the extractor's default for each requirement's `status` is the projection's `default_status`.
+- When `intent` is `mixed`, the extractor infers status per requirement as before (using source_type cues and source-specific metadata in `extra:`).
+- When the extractor has **strong contrary evidence**, it MAY override the default and emit a different status. The override is recorded with the requirement.
+
+Every extraction call goes through the LLM cache. Cache key: `hash(prompt_text + doc_content_hash + model_id + schema + locked_taxonomy_version + projection_name + projection_version)`. A new taxonomy lock or projection version invalidates extraction cache automatically.
 
 ## Data shapes
 
@@ -39,9 +51,10 @@ Every extraction call goes through the LLM cache. Cache key: `hash(prompt_text +
   "statement": "The system must ...",
   "type": "functional | quality_attribute | constraint | assumption | change_plan",
   "status": "implemented | planned | proposed | abandoned | unknown",
-  "source_id": "<NormalizedDoc.source_id>",
+  "source_id": "<projection output source_id>",
+  "projection": "<projection that produced the input doc>",
   "source_excerpt": "<verbatim quote that justifies this requirement>",
-  "source_date": "<from NormalizedDoc>",
+  "source_date": "<from projection output>",
   "extracted_by": {
     "model": "<id>",
     "prompt_version": "<hash>"
@@ -69,7 +82,7 @@ Status is set by the extractor per source. The same requirement appearing in cod
 
 ### Interaction (`extracted/<source_type>/<source_id>/interactions.json`)
 
-An **interaction** is a runtime-topology relationship between two software components: one component depending on another for behavior or data at runtime. Out of scope: human collaboration, team ownership, build-time-only dependencies (use cluster metadata for those).
+An **interaction** is a runtime-topology relationship between two software components: one component depending on another for behavior or data at runtime. Out of scope: human collaboration, team ownership, build-time-only dependencies (use domain metadata for those).
 
 ```json
 {
@@ -87,8 +100,9 @@ An **interaction** is a runtime-topology relationship between two software compo
   },
   "evidence_strength": "observed | documented | inferred",
   "evidence_excerpt": "<verbatim quote from source>",
-  "source_id": "<NormalizedDoc.source_id>",
-  "source_date": "<from NormalizedDoc>",
+  "source_id": "<projection output source_id>",
+  "projection": "<projection that produced the input doc>",
+  "source_date": "<from projection output>",
   "extracted_by": {
     "model": "<id>",
     "prompt_version": "<hash>"
@@ -129,30 +143,21 @@ An **interaction** is a runtime-topology relationship between two software compo
 
 Downstream consumers MAY filter or weight by `evidence_strength`.
 
-**Per-source extraction guidance:**
+### Concept (`extracted/<source_type>/<source_id>/concepts.json`)
 
-| Source       | Typical `kind` values                                   | Typical `evidence_strength` |
-|--------------|---------------------------------------------------------|----------------------------|
-| `git`        | All kinds, depending on code / config / OpenAPI present | `observed`                 |
-| `jira`       | Whatever the ticket describes                            | `documented`               |
-| `rfp`        | Mostly `http_call`, `event_*`, `file_transfer`           | `documented`               |
-| `spreadsheet`| Often `http_call` or `file_transfer` (integration lists) | `documented`               |
-| `transcript` | Whatever is said                                         | `documented` or `inferred` |
-
-### Domain (`extracted/<source_type>/<source_id>/domains.json`)
-
-A **domain** is a named concept the system organizes itself around. Two kinds are tracked explicitly because they answer different questions.
+A **concept** is a named concept the system organizes itself around. Two kinds are tracked explicitly because they answer different questions.
 
 ```json
 {
   "id": "<source_id>:<local-index>",
-  "kind": "business_domain | technical_domain",
+  "kind": "business_concept | technical_concept",
   "name": "Payments",
   "aliases": ["payment processing", "billing"],
-  "description": "Concise statement of what this domain covers, in the source's own framing.",
+  "description": "Concise statement of what this concept covers, in the source's own framing.",
   "evidence_excerpt": "<verbatim quote from source>",
-  "source_id": "<NormalizedDoc.source_id>",
-  "source_date": "<from NormalizedDoc>",
+  "source_id": "<projection output source_id>",
+  "projection": "<projection that produced the input doc>",
+  "source_date": "<from projection output>",
   "extracted_by": {
     "model": "<id>",
     "prompt_version": "<hash>"
@@ -162,10 +167,10 @@ A **domain** is a named concept the system organizes itself around. Two kinds ar
 
 **`kind` semantics:**
 
-- `business_domain` — a business capability or problem area (DDD-style). Examples: `Payments`, `Onboarding`, `Claims`, `Reporting`. Answers "what does the business do here?"
-- `technical_domain` — an implementation-side area or concern. Examples: `Authentication`, `Event Bus`, `Data Warehouse`, `Frontend Shell`. Answers "what part of the technical stack is this?"
+- `business_concept` — a business capability or problem area (DDD-style). Examples: `Payments`, `Onboarding`, `Claims`, `Reporting`. Answers "what does the business do here?"
+- `technical_concept` — an implementation-side area or concern. Examples: `Authentication`, `Event Bus`, `Data Warehouse`, `Frontend Shell`. Answers "what part of the technical stack is this?"
 
-A single source can yield both kinds. The same concept may legitimately appear under both kinds (e.g., "Payments" as a business domain AND a technical subsystem); these are separate entries.
+A single source can yield both kinds. The same concept may legitimately appear under both kinds (e.g., "Payments" as a business concept AND a technical subsystem); these are separate entries.
 
 **`aliases` rationale.** Sources often use varying terminology for the same concept. Aliases are captured at extraction time and used during consolidation to merge entries.
 
@@ -176,7 +181,7 @@ extracted/
 └── <source_type>/<source_id>/
     ├── requirements.json
     ├── interactions.json
-    └── domains.json
+    └── concepts.json
 ```
 
 ## Related decisions
@@ -185,6 +190,8 @@ extracted/
 - [D-5](../../decisions/0005-structured-outputs-only.md) structured outputs only.
 - [D-16](../../decisions/0016-three-explicit-extractors.md) three extractors with distinct schemas.
 - [D-23](../../decisions/0023-raw-evidence-accessible-to-extractors.md) raw evidence access.
+- [D-49](../../decisions/0049-projection-primitive.md) projection primitive.
+- [D-50](../../decisions/0050-source-declared-intent.md) source-declared intent.
 
 ## Failure modes
 
@@ -193,5 +200,6 @@ extracted/
 - Hallucinated `source_excerpt` / `evidence_excerpt` values not actually present in the doc. Mitigation: post-extraction validation that excerpts are substrings of the source.
 - **Interaction over-extraction.** Extractor invents a direction from ambiguous evidence. Mitigation: schema requires `bidirectional: true` when direction can't be determined.
 - **Interaction scope creep.** Extractor emits human-collaboration relationships ("Alice handed off to Bob"). Mitigation: prompt explicitly forbids.
-- **Domain proliferation.** Every minor noun becomes a domain. Mitigation: prompt requires a minimum specificity threshold (a domain is something the source treats as a *named, scoped concept*, not any mentioned topic).
+- **Concept proliferation.** Every minor noun becomes a concept. Mitigation: prompt requires a minimum specificity threshold (a concept is something the source treats as a *named, scoped concept*, not any mentioned topic).
 - **Status mis-classification.** Same code-implemented feature also has a stale "planned" Jira ticket; both extract correctly, consolidation must reconcile. Not a failure — by design.
+- **Per-projection status mis-classification across same evidence.** A single piece of evidence with multiple projections may produce conflicting status values across projections of the same evidence. By design: each projection has its own intent; if two projections of the same evidence have different intents, the resulting requirements legitimately differ on status.

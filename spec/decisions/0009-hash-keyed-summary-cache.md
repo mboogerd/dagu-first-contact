@@ -2,7 +2,7 @@
 
 **Status.** Accepted.
 
-**Decision.** Cluster summary cache key is `hash(sorted(member_content_hashes) + prompt_version + model)`.
+**Decision.** Domain summary cache key is `hash(sorted(member_content_hashes) + prompt_version + model)`.
 
 **Rationale.** Recursive summarization with hash-keyed cache keeps cost bounded: unchanged subtrees cost nothing on re-runs.
 
@@ -12,4 +12,4 @@
 
 **Trade-offs accepted.** Cache key recomputation is itself work; negligible at this scale.
 
-**Related.** [cluster-semantic spec](../specs/cluster-semantic/spec.md).
+**Related.** [domain-semantic spec](../specs/domain-semantic/spec.md).

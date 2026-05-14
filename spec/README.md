@@ -1,12 +1,12 @@
 # Assessment Pipeline Spec
 
-A reproducible, LLM-augmented pipeline for ingesting heterogeneous evidence about an existing software system, organizing it into emergent clusters, and producing a prioritized human-review queue of requirements and conflicts.
+A reproducible, LLM-augmented pipeline for ingesting heterogeneous evidence about an existing software system, organizing it into emergent domains, and producing a prioritized human-review queue of requirements and conflicts.
 
 **Purpose of the assessment** the pipeline supports: establish a baseline understanding of a client's AWS SaaS solution — its software landscape, requirements, and unimplemented change plan — sufficient to estimate the scale of an on-premise transformation and judge how much of that work can be accelerated with Gen-AI.
 
 **Scope of this spec:** the pipeline that produces the artifacts the consultant will read. The consultant's report is out of scope.
 
-**Phase:** v1 / proof-of-concept. Calibration, the full eval framework, and cluster archival are deliberately deferred (see [open-questions.md](open-questions.md)).
+**Phase:** v1 / proof-of-concept. Calibration, the full eval framework, and domain archival are deliberately deferred (see [open-questions.md](open-questions.md)).
 
 ---
 
@@ -16,21 +16,28 @@ A reproducible, LLM-augmented pipeline for ingesting heterogeneous evidence abou
 spec/
 ├── README.md             # this file
 ├── principles.md         # the immutable constraints (constitution)
-├── conventions.md        # spec authoring conventions (NEEDS CLARIFICATION, [P], change folders)
+├── conventions.md        # spec authoring + runtime artifact naming conventions
+├── glossary.md           # central glossary of terms
 ├── risks.md              # known risks accepted in v1
 ├── open-questions.md     # deferred items, with pointers
 ├── specs/                # per-component behavior contracts
-│   ├── ingest/                  # Stage 1
+│   ├── ingest/                  # Stage 1 (evidence fetch + projections)
 │   ├── taxonomy/                # Stage 1.5
-│   ├── embedding/               # cross-cutting (supports Stages 3, 4, 4.5)
+│   ├── embedding/               # cross-cutting (supports Stages 3, 4)
 │   ├── extract/                 # Stage 2
-│   ├── cluster-structural/      # Stage 3a
-│   ├── cluster-semantic/        # Stage 3b
-│   ├── cluster-hierarchy/       # Stage 3c
-│   ├── consolidate/             # Stage 4
-│   ├── cross-cluster/           # Stage 4.5
+│   ├── domain-structural/       # Stage 3a
+│   ├── domain-semantic/         # Stage 3b
+│   ├── domain-hierarchy/        # Stage 3c
+│   ├── consolidate/             # Stage 4 (includes cross-domain findings)
 │   ├── orchestration/           # Stage 5
 │   └── report/                  # Stage 5.5
+├── projections/          # per-projection contract files
+│   ├── git__repo_summary.md
+│   ├── jira__bulk_download.md
+│   ├── rfp__whole_document.md
+│   ├── rfp__section_split.md
+│   ├── spreadsheet__table_render.md
+│   └── transcript__speaker_grouped.md
 ├── decisions/            # one file per design decision (ADR-style)
 └── changes/              # per-change folders (the unit of iterative work)
     └── README.md         # change-folder template + workflow
@@ -40,6 +47,7 @@ spec/
 
 - **Start with `principles.md`** to understand the non-negotiable constraints.
 - **Browse `specs/<component>/spec.md`** for the behavior contract of each component. Each component is tagged with its pipeline phase (Stage 1, 1.5, 2, etc.) when one applies.
+- **Browse `projections/<adapter>__<projection>.md`** for the contract of each projection (what it produces, its body format, its cache key).
 - **Consult `decisions/<NNNN>-slug.md`** when you want to know *why* something is the way it is. Decisions retain their original numbers from the v0 monolith for traceability.
 - **Add a change folder under `changes/<NNN>-slug/`** when starting new work. See [changes/README.md](changes/README.md) for the template.
 
@@ -49,11 +57,11 @@ The following are intentionally **not in this spec** and are deferred (with poin
 
 - Calibration framework and tunable confidence weights — defaults are used; the consultant accepts noise in the review queue.
 - Eval framework (eval cases, runs, judge prompts, the `eval` subcommand) — replaced by prompt versioning + manual spot-checks.
-- Cluster archival semantics — assumed not needed in the assessment timeframe.
+- Domain archival semantics — assumed not needed in the assessment timeframe.
 
 The following are **kept** even though they may seem premature, because the consultant wants to experiment with them in v1:
 
-- Hierarchical super-clustering ([Stage 3c](specs/cluster-hierarchy/spec.md)).
+- Hierarchical super-domains ([Stage 3c](specs/domain-hierarchy/spec.md)).
 
 ## Conventions in this spec
 

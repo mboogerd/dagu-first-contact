@@ -2,13 +2,13 @@
 
 **Status.** Accepted.
 
-**Decision.** Consolidate leaf clusters first; parents reuse children's consolidated outputs.
+**Decision.** Consolidate leaf domains first; parents reuse children's consolidated outputs.
 
-**Rationale.** Cheaper, cacheable, follows the cluster hierarchy.
+**Rationale.** Cheaper, cacheable, follows the domain hierarchy.
 
 **Alternatives considered.**
-- Global consolidation in one pass — won't scale; loses cluster context.
+- Global consolidation in one pass — won't scale; loses domain context.
 
-**Trade-offs accepted.** Cross-cluster conflicts only surface at common ancestor — addressed by the separate [cross-cluster](../specs/cross-cluster/spec.md) stage.
+**Trade-offs accepted.** Cross-domain conflicts only surface at the common ancestor during the bottom-up traversal — the cross-domain findings pass (phase 4f of consolidate) addresses this at each non-leaf domain.
 
-**Related.** [consolidate spec](../specs/consolidate/spec.md); [D-40](0040-cross-cluster-as-separate-stage.md).
+**Related.** [consolidate spec](../specs/consolidate/spec.md).

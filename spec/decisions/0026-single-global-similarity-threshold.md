@@ -8,9 +8,9 @@
 
 **Alternatives considered.**
 - Per-source-type thresholds — too many knobs without enough data to tune them.
-- Adaptive threshold per cluster density — theoretically appealing but fiddly.
+- Adaptive threshold per domain density — theoretically appealing but fiddly.
 - Top-k assignment (always assign to nearest seed, no threshold) — forces misfit assignments.
 
 **Trade-offs accepted.** A single threshold won't be optimal for every source type. Acceptable: the low-confidence band is the safety net.
 
-**Related.** [cluster-structural spec](../specs/cluster-structural/spec.md).
+**Related.** [domain-structural spec](../specs/domain-structural/spec.md).

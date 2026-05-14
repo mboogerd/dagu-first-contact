@@ -34,7 +34,7 @@ When generating any spec content (proposal, design, delta), the author (human or
 
 Examples:
 
-> The extractor reads the full normalized doc [NEEDS CLARIFICATION: does it also consult `evidence/` when normalization_kind is curated_summary? See D-23 but confirm for this extractor specifically].
+> The extractor reads the full projection output [NEEDS CLARIFICATION: does it also consult `evidence/` when the projection contract declares evidence access? See D-23 but confirm for this extractor specifically].
 
 > Threshold defaults to 0.78 [NEEDS CLARIFICATION: validated against actual corpus, or carried over from v0 guess?].
 
@@ -122,7 +122,115 @@ If a component's behavior changes meaningfully, the change must:
 3. Resolve any `[NEEDS CLARIFICATION]` markers before implementation.
 4. Merge the delta into the stable component spec on landing.
 
+## Cross-reference markers
+
+The spec uses a small set of inline markers for cross-referencing:
+
+- **`[D-N]`** — reference to design decision N. The N matches the filename prefix in `decisions/`. Example: `[D-14]` refers to `decisions/0014-deterministic-orchestration.md`.
+- **`[R-N]`** — reference to risk N. The N matches the entry heading in `risks.md`.
+- **`[NEEDS CLARIFICATION: ...]`** — flags a silent assumption that must be resolved before the surrounding content is implementable. Reviewers should fail a change that contains unresolved markers.
+- **`[P]`** — in `tasks.md`, marks a task that can run in parallel with adjacent same-numbered tasks.
+
 ## Risks and open questions
 
 - A **risk** is a known failure mode we've accepted with mitigations. New risks are appended to `risks.md`.
 - An **open question** is a deferred design or scope decision. New ones go into `open-questions.md` with: the question, why it matters, what would resolve it, and the trigger that should re-open it.
+
+---
+
+## Vault and runtime artifact naming conventions
+
+The assessment root is one Obsidian vault. The conventions below apply to **runtime pipeline artifacts** (the files the pipeline produces), not to spec files.
+
+### Top-level directory structure
+
+```
+evidence/           ← raw, immutable evidence per source
+projections/        ← projection outputs (the normalized layer)
+extracted/          ← structured extractions per projection output
+domains/            ← domain tree (renamed from clusters/)
+taxonomy/           ← discovery iterations, findings, proposal
+reports/            ← timestamped report snapshots
+cache/              ← LLM call cache
+config/             ← all configuration files
+```
+
+### Source identity
+
+Source identity is always a top-level folder under `evidence/`, `projections/`, `extracted/`:
+
+- `evidence/<source>/`
+- `projections/<source>/<source-id>/`
+- `extracted/<source>/<source-id>/`
+
+Examples: `evidence/jira/`, `projections/jira/PROJ-123/`, `extracted/git/payments-service/`.
+
+### Projection output folders
+
+A projection MAY create subfolders for its outputs. When it does, the subfolder is named `<projection>/` under the source-id folder:
+
+```
+projections/<source>/<source-id>/<projection>/
+├── <output>.md
+├── <output>.embedding.json
+└── <intermediates>
+```
+
+### Filename convention
+
+Filenames within scope folders follow the pattern:
+
+```
+<source>__<source-id>__<projection>[__<output-id>].<role>.<ext>
+```
+
+The `__` (double underscore) separator is chosen so Obsidian wikilinks can use the filename directly without path disambiguation.
+
+- `<role>` indicates the file's purpose: e.g., `summary`, `requirements`, `review-queue`.
+- `<ext>` is the file extension: `.md`, `.json`, `.yaml`.
+- `<output-id>` is present only for multi-output projections.
+
+### Domain (cluster) hierarchy as folders
+
+Domains preserve hierarchy as folders. Per-domain files within each folder are prefixed with the domain name so wikilinks resolve without needing the full path:
+
+```
+domains/
+├── _index.yaml
+├── _assignments.json
+├── root__review-queue.md
+├── root__cross-domain-findings.md
+├── financial-domain/
+│   ├── financial-domain__summary.md
+│   ├── financial-domain__review-queue.md
+│   └── payments-service/
+│       ├── payments-service__summary.md
+│       ├── payments-service__review-queue.md
+│       └── payments-service__groups/
+│           ├── payments-service__group-0001.md
+│           └── payments-service__group-0002.md
+```
+
+### Embedding sidecars
+
+Embedding sidecars live next to their projection output with `.embedding.json` suffix (or `.embedding.<prefix>.json` for multi-prefix cases):
+
+```
+projections/jira/PROJ-123/ticket_render/PROJ-123.embedding.json
+projections/jira/PROJ-123/ticket_render/PROJ-123.embedding.grouping.json
+```
+
+When only one prefix is in use (the common case), the prefix suffix is omitted and the file defaults to the `clustering: ` prefix.
+
+### Cross-references in frontmatter
+
+Frontmatter cross-references between artifacts SHOULD be wikilink-shaped string values so Obsidian backlinks resolve:
+
+```yaml
+parent_evidence: "[[jira__PROJ-123]]"
+domain: "[[payments-service__summary]]"
+```
+
+### Separator choice
+
+The `__` separator may interact poorly with values that naturally contain double underscores. If this is encountered in practice, the separator can be changed in a future revision. For v1, no known source identifiers contain `__`.

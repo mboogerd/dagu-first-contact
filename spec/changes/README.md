@@ -137,16 +137,15 @@ When the change lands, this delta is merged into the stable `../specs/<component
 
 ## Initial planned changes
 
-A sketch of the first few changes to extract from this spec (subject to refinement):
+A sketch of the first few implementation changes (subject to refinement):
 
-1. `001-evidence-and-adapters` — adapter registry, the first two adapters (git, jira), evidence + normalized layout.
-2. `002-normalization-pipeline` — frontmatter schema, content-hash caching skeleton.
+1. `001-projection-primitive` — **Landed.** Projection primitive, source-declared intent, six projection contracts.
+2. `002-evidence-and-adapters` — adapter registry, the first two adapters (git, jira), evidence fetch + projection execution.
 3. `003-taxonomy-discovery` — Stage 1.5 (simplified: no eval).
-4. `004-extraction` — three extractors with prompt versioning.
-5. `005-clustering-v0` — embedding-based assignment + repo seeds + HDBSCAN; no hierarchy yet.
-6. `006-cluster-hierarchy` — Stage 3c super-clustering (kept per consultant request).
-7. `007-consolidation-v0` — bottom-up, deterministic confidence with default weights, LLM criticality. No cross-cluster yet.
-8. `008-report-v0` — review queue + landscape + provenance sections + handover artifact.
-9. `009-cross-cluster` — Stage 4.5 in its conservative form.
+4. `004-extraction` — three extractors (`extract_requirements`, `extract_interactions`, `extract_concepts`) with prompt versioning.
+5. `005-domain-assignment-v0` — embedding-based assignment + repo seeds + HDBSCAN; no hierarchy yet.
+6. `006-domain-hierarchy` — Stage 3c super-domains (kept per consultant request; experimental).
+7. `007-consolidation-v0` — bottom-up with cross-domain findings, deterministic confidence with default weights, LLM criticality, markdown group files, review queue markdown tables.
+8. `008-report-v0` — review queue rendering + landscape + provenance sections + handover artifact.
 
 The first runnable end-to-end version is after `008`. The order is a suggestion; it may shift as we learn.

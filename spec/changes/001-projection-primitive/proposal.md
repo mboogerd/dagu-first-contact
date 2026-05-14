@@ -1,8 +1,8 @@
 # [001] Projection primitive
 
-**Status.** Proposed
+**Status.** Landed
 **Opened.** 2026-05-13
-**Landed.** —
+**Landed.** 2026-05-14
 
 ## Motivation
 

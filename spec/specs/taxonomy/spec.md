@@ -4,7 +4,7 @@ Validate and refine the starting taxonomy against real evidence before bulk extr
 
 **Phase.** Stage 1.5.
 
-**Input → Output.** `normalized/` + `config/taxonomy.starting.yaml` → `taxonomy/` + `config/taxonomy.locked.yaml`.
+**Input → Output.** `projections/` + `config/taxonomy.starting.yaml` → `taxonomy/` + `config/taxonomy.locked.yaml`.
 
 **When it runs.** Once per assessment, blocking. [Extract](../extract/spec.md) refuses to run without `config/taxonomy.locked.yaml`. Re-running this stage produces a new `taxonomy.locked.yaml` version; downstream stages with cached outputs based on the prior version are invalidated through normal cache-key versioning.
 
@@ -16,8 +16,8 @@ A bounded discovery loop per source type, followed by global consolidation and h
 
 ### 1.5a · Stratified sampling, per source type
 
-- For each source type in scope, repeatedly sample one `NormalizedDoc` until learning stalls.
-- Sampling prioritizes **diversity axes**: size (small/medium/large), age (recent/median/old), structure (e.g., for Jira: bug/story/epic; for git: code/config/docs/specs), topic (clustered by embedding to spread coverage).
+- For each source type in scope, repeatedly sample one **projection output** until learning stalls.
+- Sampling prioritizes **diversity axes**: size (small/medium/large), age (recent/median/old), structure (e.g., for Jira: bug/story/epic; for git: code/config/docs/specs), topic (by embedding to spread coverage), and **projection** (when a source type has more than one projection enabled, ensuring discovery sees outputs from each projection rather than over-sampling whichever produced more docs).
 - Each iteration's pick maximizes a diversity score against previously-sampled docs in this source type. Ties broken by earliest age.
 - Sampled docs are recorded; the same doc is not re-sampled within a source type.
 
@@ -61,7 +61,7 @@ A bounded discovery loop per source type, followed by global consolidation and h
 
 ### Starting and Locked Taxonomy (`config/taxonomy.{starting,locked}.yaml`)
 
-The starting taxonomy mirrors the enum values defined in the [extract spec](../extract/spec.md) (requirement `type` / `status`, interaction `kind` / `evidence_strength`, domain `kind`). It is the **floor**: this stage may add, refine, or split values, but removals require human approval in the proposal review.
+The starting taxonomy mirrors the enum values defined in the [extract spec](../extract/spec.md) (requirement `type` / `status`, interaction `kind` / `evidence_strength`, concept `kind`). It is the **floor**: this stage may add, refine, or split values, but removals require human approval in the proposal review.
 
 ```yaml
 version: "<semver or hash>"
@@ -90,11 +90,11 @@ interaction:
       description: Extracted from code, config, or specs that implement the interaction.
     # ...
 
-domain:
+concept:
   kind:
-    - value: business_domain
+    - value: business_concept
       description: A business capability or problem area.
-    - value: technical_domain
+    - value: technical_concept
       description: An implementation-side area or concern.
 ```
 
@@ -107,10 +107,12 @@ One record per sampled document per iteration. Captures what the discovery LLM s
 ```json
 {
   "iteration": 3,
-  "source_type": "jira",
-  "source_id": "PROJ-1287",
+  "source_type": "rfp",
+  "source_id": "doc-12",
+  "projection": "rfp:section_split",
+  "projection_output": "03-payments-integration.md",
   "sampled_for": "diversity_axes_satisfied",
-  "diversity_axes": {"size": "large", "age": "old", "structure": "many_comments"},
+  "diversity_axes": {"size": "large", "age": "old", "structure": "many_sections", "projection": "section_split"},
   "observations": {
     "requirement_type": {
       "values_used": ["functional", "constraint"],
@@ -125,7 +127,7 @@ One record per sampled document per iteration. Captures what the discovery LLM s
       ]
     },
     "interaction_kind": { "values_used": [], "ambiguous": [], "missing": [] },
-    "domain_kind": { "values_used": [], "ambiguous": [], "missing": [] }
+    "concept_kind": { "values_used": [], "ambiguous": [], "missing": [] }
   },
   "advances_learning": true,
   "advance_reason": "Proposed new value 'regulatory_constraint' for requirement.type"
@@ -146,7 +148,7 @@ Aggregates all per-document findings into a single proposal-ready structure.
     {
       "value": "regulatory_constraint",
       "rationale": "<merged across sources>",
-      "supporting_findings": ["jira:PROJ-1287:iter-3", "rfp:doc-12:iter-1"],
+      "supporting_findings": ["rfp:doc-12:section_split:iter-3", "jira:PROJ-1287:bulk_download:iter-1"],
       "confidence": "high"
     }
   ],
@@ -201,4 +203,4 @@ taxonomy/
 - **Discovery loop never terminates.** "Advances learning" is too lenient and every iteration finds *something*. Mitigation: hard iteration cap; "advance" requires *new* findings, not repeated ones.
 - **Discovery overfits to LLM verbosity.** The discovery LLM is enthusiastic and proposes spurious new values. Mitigation: cross-source consolidation requires support from **at least two findings** for a proposed addition to reach "high confidence"; single-finding proposals are flagged "low confidence" in the proposal.
 - **Taxonomy drift mid-assessment.** After lock, real extraction reveals genuine gaps. Mitigation: per [D-21], document as known limitation; finish the run; revisit only if severity warrants a re-lock. The cost of restarting is mostly cache-recoverable but prompt changes still invalidate extractor cache for affected sources.
-- **Iteration cost.** Each iteration is a full-document LLM call. At ~15 iterations × 5 source types = ~75 calls on cheap model. Negligible. The expense is consultant review time, not tokens.
+- **Iteration cost.** Each iteration is a full-document LLM call. At ~15 iterations x 5 source types = ~75 calls on cheap model. Negligible. The expense is consultant review time, not tokens.
