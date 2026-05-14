@@ -107,7 +107,7 @@ One record per sampled document per iteration. Captures what the discovery LLM s
 ```json
 {
   "iteration": 3,
-  "source_type": "rfp",
+  "adapter": "rfp",
   "source_id": "doc-12",
   "projection": "rfp:section_split",
   "projection_output": "03-payments-integration.md",
@@ -183,7 +183,7 @@ Aggregates all per-document findings into a single proposal-ready structure.
 ```
 taxonomy/
 ├── iterations/
-│   └── <source_type>/
+│   └── <adapter>/
 │       └── iter-<NN>.json    # one record per sampled doc per iteration
 ├── findings.json             # consolidated findings across all source types
 └── proposal.md               # human-reviewable proposal (diff vs starting taxonomy)

@@ -14,7 +14,7 @@ Derive structured information of interest (requirements, interactions, concepts)
 
 Three source-agnostic extractors run independently per projection output:
 
-1. **`extract_requirements`** — produces `Requirement` rows. Captures `type` (functional / quality_attribute / constraint / assumption / change_plan) and `status` (implemented / planned / proposed / abandoned / unknown). Status MUST be set per source; the extractor uses `source_type` and source-specific cues as context to infer status (e.g., closed Jira ticket → likely `implemented` or `abandoned` depending on resolution; RFP statement → likely `proposed` or `planned`).
+1. **`extract_requirements`** — produces `Requirement` rows. Captures `type` (functional / quality_attribute / constraint / assumption / change_plan) and `status` (implemented / planned / proposed / abandoned / unknown). Status MUST be set per source; the extractor uses the `adapter` field and source-specific cues as context to infer status (e.g., closed Jira ticket → likely `implemented` or `abandoned` depending on resolution; RFP statement → likely `proposed` or `planned`).
 
 2. **`extract_interactions`** — produces `Interaction` rows for **runtime topology only**. Captures `kind`, `participants` (with explicit `bidirectional` flag when direction is unclear), `endpoint` (when available; degrades to service-level when not), and `evidence_strength` (observed / documented / inferred). Human collaboration, team ownership, and build-time-only dependencies are **out of scope** and MUST NOT be emitted.
 
@@ -23,27 +23,27 @@ Three source-agnostic extractors run independently per projection output:
 Each extractor:
 
 - Has its own prompt template in `config/prompts/` with a version hash recorded in the template's frontmatter (see [orchestration spec](../orchestration/spec.md) for how prompt versions feed cache keys).
-- Reads the full projection output; `source_type` from the frontmatter is *context*, not *control flow*.
+- Reads the full projection output; `adapter` from the frontmatter is *context*, not *control flow*.
 - Produces structured JSON via provider tool-calling, validated against the schemas below.
 - Each projection output is treated as an independent input. A single piece of evidence with multiple projections produces multiple extraction runs (one per projection output).
 
 ### Raw evidence access
 
-Extractors MAY consult the underlying `evidence/<source_type>/<source_id>/` when the projection's contract declares that evidence access is expected (e.g., `git:repo_summary` carries enough information that the extractor may want to dig into the underlying code). See [D-23].
+Extractors MAY consult the underlying `evidence/<adapter>/<source_id>/` when the projection's contract declares that evidence access is expected (e.g., `git:repo_summary` carries enough information that the extractor may want to dig into the underlying code). See [D-23].
 
 ### Status inference and intent
 
 `extract_requirements` honors the `intent` and `default_status` frontmatter fields:
 
 - When `intent` is `implemented | planned | proposed`, the extractor's default for each requirement's `status` is the projection's `default_status`.
-- When `intent` is `mixed`, the extractor infers status per requirement as before (using source_type cues and source-specific metadata in `extra:`).
+- When `intent` is `mixed`, the extractor infers status per requirement as before (using adapter-specific cues and source-specific metadata in `extra:`).
 - When the extractor has **strong contrary evidence**, it MAY override the default and emit a different status. The override is recorded with the requirement.
 
 Every extraction call goes through the LLM cache. Cache key: `hash(prompt_text + doc_content_hash + model_id + schema + locked_taxonomy_version + projection_name + projection_version)`. A new taxonomy lock or projection version invalidates extraction cache automatically.
 
 ## Data shapes
 
-### Requirement (`extracted/<source_type>/<source_id>/requirements.json`)
+### Requirement (`extracted/<adapter>/<source_id>/requirements.json`)
 
 ```json
 {
@@ -80,7 +80,7 @@ Every extraction call goes through the LLM cache. Cache key: `hash(prompt_text +
 
 Status is set by the extractor per source. The same requirement appearing in code AND a Jira backlog ticket will produce two `Requirement` rows with different statuses; [consolidate](../consolidate/spec.md) reconciles them.
 
-### Interaction (`extracted/<source_type>/<source_id>/interactions.json`)
+### Interaction (`extracted/<adapter>/<source_id>/interactions.json`)
 
 An **interaction** is a runtime-topology relationship between two software components: one component depending on another for behavior or data at runtime. Out of scope: human collaboration, team ownership, build-time-only dependencies (use domain metadata for those).
 
@@ -143,7 +143,7 @@ An **interaction** is a runtime-topology relationship between two software compo
 
 Downstream consumers MAY filter or weight by `evidence_strength`.
 
-### Concept (`extracted/<source_type>/<source_id>/concepts.json`)
+### Concept (`extracted/<adapter>/<source_id>/concepts.json`)
 
 A **concept** is a named concept the system organizes itself around. Two kinds are tracked explicitly because they answer different questions.
 
@@ -178,7 +178,7 @@ A single source can yield both kinds. The same concept may legitimately appear u
 
 ```
 extracted/
-└── <source_type>/<source_id>/
+└── <adapter>/<source_id>/
     ├── requirements.json
     ├── interactions.json
     └── concepts.json

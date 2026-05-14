@@ -144,7 +144,7 @@ sections:
   - provenance
 
 provenance:
-  per_source_breakdown: true            # show counts by source_type as well as totals
+  per_source_breakdown: true            # show counts by adapter as well as totals
 ```
 
 ## Write

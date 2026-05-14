@@ -10,15 +10,40 @@ Pull raw evidence from sources; run projections to produce downstream-ready docu
 
 ## Behavior
 
+### Adapter registry
+
+Each adapter is a named module registered under `assessment/adapters/<adapter-name>/`. The adapter name is a short, stable identifier (e.g., `git`, `jira`, `rfp`, `spreadsheet`, `transcript`) that serves as:
+
+- The **directory key** under `evidence/`, `projections/`, and `extracted/`.
+- The **frontmatter field** `adapter` in projection outputs (replacing the former `source_type` enum).
+- The **lookup key** for per-adapter config (authority weight, default evidence strength).
+
+Adding a new source type means creating one adapter directory; nothing downstream changes.
+
+Each adapter directory contains:
+
+- The adapter implementation (fetch logic).
+- An `adapter.yaml` manifest declaring the adapter's metadata:
+
+```yaml
+# assessment/adapters/jira/adapter.yaml
+name: jira
+description: Jira project ticket ingestion
+authority_weight: 0.6          # used in consolidation reconciliation and confidence scoring
+default_evidence_strength: documented
+```
+
+Authority weights are co-located with the adapter instead of in `consolidation.yaml`, so adding a new source type doesn't require editing a distant config file.
+
 ### Adapter responsibilities
 
-Each source-type adapter has a single responsibility: fetch raw evidence into `evidence/<source_type>/...` (idempotent — skip if unchanged).
+Each adapter has a single responsibility: fetch raw evidence into `evidence/<adapter>/...` (idempotent — skip if unchanged).
 
-Adapters in scope for v1: `git`, `jira`, `spreadsheet`, `rfp`, `transcript`. Adding a new source type means writing one adapter; nothing downstream changes.
+Adapters in scope for v1: `git`, `jira`, `spreadsheet`, `rfp`, `transcript`.
 
 ### Projection execution
 
-For each evidence record, the ingest CLI runs **every projection registered for that record's source type** (as declared in `config/sources.yaml`), producing one or more files in `projections/<source>/<id>/<projection>/`.
+For each evidence record, the ingest CLI runs **every projection registered for that record's adapter** (as declared in `config/sources.yaml`), producing one or more files in `projections/<adapter>/<id>/<projection>/`.
 
 Projection execution is shared infrastructure, not the adapter's job. The git adapter is not special: its `summarize_repo` LLM call is the implementation of the `git:repo_summary` projection; the adapter itself does only fetching of `evidence/git/<repo>/`.
 
@@ -27,7 +52,7 @@ Projection execution is shared infrastructure, not the adapter's job. The git ad
 Every projection produces one or more **projection output files**, each a normalized markdown document. The contract a projection MUST honor:
 
 1. **Frontmatter schema.** Every output file has the frontmatter described in [Frontmatter schema](#frontmatter-schema) below.
-2. **Deterministic naming.** Output filenames within `projections/<source>/<id>/<projection>/` are deterministic functions of the projection's inputs and parameters. Re-running with the same inputs produces the same filenames.
+2. **Deterministic naming.** Output filenames within `projections/<adapter>/<id>/<projection>/` are deterministic functions of the projection's inputs and parameters. Re-running with the same inputs produces the same filenames.
 3. **Per-projection body contract.** Each projection has its own contract for the markdown body, specified in the projection's contract file under `spec/projections/<adapter>__<projection>.md`.
 4. **Idempotence.** Running the projection twice with identical inputs produces identical outputs. LLM-based projections achieve this via cache key + temperature=0; deterministic projections trivially.
 5. **No mutation of evidence.** Projection implementations MUST NOT write into `evidence/`.
@@ -66,7 +91,7 @@ Every projection output file has this frontmatter:
 ```yaml
 ---
 # Provenance
-source_type: jira
+adapter: jira                # the adapter name; also the directory key under evidence/, projections/, extracted/
 source_id: PROJ-123
 source_date: 2026-02-14
 ingested_at: 2026-05-13T10:00:00Z
@@ -157,10 +182,10 @@ When a projection output's `content_hash` changes:
 
 ```
 evidence/
-└── <source_type>/<source_id>/...     ← raw, immutable
+└── <adapter>/<source_id>/...         ← raw, immutable
 
 projections/
-└── <source_type>/<source_id>/
+└── <adapter>/<source_id>/
     └── <projection>/
         ├── <output>.md               ← projection output(s)
         ├── <output>.embedding*.json  ← embedding sidecars (see embedding spec)
@@ -176,6 +201,7 @@ projections/
 - [D-3](../../decisions/0003-adapter-pattern-for-ingestion.md) adapter pattern.
 - [D-49](../../decisions/0049-projection-primitive.md) projection primitive.
 - [D-50](../../decisions/0050-source-declared-intent.md) source-declared intent.
+- [D-51](../../decisions/0051-adapter-registry.md) adapter registry.
 
 ## Failure modes
 

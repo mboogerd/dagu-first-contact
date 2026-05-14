@@ -12,7 +12,7 @@ Central glossary of terms used across the spec. Organized by area.
 | **Evidence** | Raw, immutable input artifacts fetched by adapters. Lives in `evidence/`. Never mutated by downstream stages. |
 | **Projection** | A named, parameterized operation that takes an evidence record and produces one or more downstream-ready normalized documents. See [D-49](decisions/0049-projection-primitive.md). |
 | **Projection output** | A markdown file with YAML frontmatter produced by a projection. Lives in `projections/`. The unit that downstream stages consume. |
-| **Adapter** | A per-source-type module responsible for fetching raw evidence. One adapter per source type (git, jira, rfp, spreadsheet, transcript). |
+| **Adapter** | A registered per-source-type module under `assessment/adapters/<name>/` responsible for fetching raw evidence. The adapter name is the directory key under `evidence/`, `projections/`, `extracted/` and the `adapter` frontmatter field. One adapter per source type (git, jira, rfp, spreadsheet, transcript in v1). See [D-51](decisions/0051-adapter-registry.md). |
 | **Intent** | A projection-level declaration of whether the evidence describes built state (`implemented`), committed-but-unbuilt state (`planned`), discussed state (`proposed`), or mixed. See [D-50](decisions/0050-source-declared-intent.md). |
 
 ## Extraction

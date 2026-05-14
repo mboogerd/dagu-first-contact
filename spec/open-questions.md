@@ -16,13 +16,9 @@ This is also where reviewer-flagged concerns and the consultant's larger-scale i
 
 ## Generic primitives
 
-### Q-1 · `source_type` as directory key vs. enum
+### ~~Q-1 · `source_type` as directory key vs. enum~~ RESOLVED
 
-**Why it matters.** Today `source_type` is an enum spread across adapters, frontmatter, eval config, source-authority weights, and prompts. In most of those places it functions as "name of the directory the artifact came from." Replacing the enum with a directory-name + adapter-registry convention would simplify adding new source types and remove residual coupling.
-
-**What would resolve it.** A change folder that introduces an adapter registry and replaces `source_type` lookups with adapter-name lookups. Per-source config (authority weight, default `evidence_strength`) co-located with each adapter.
-
-**Deferred for.** PoC scope; the current enum is workable for the five known source types. The projection registry pattern ([D-49](decisions/0049-projection-primitive.md)) is a precedent for an adapter registry.
+**Resolved by** [D-51](decisions/0051-adapter-registry.md). The `source_type` enum is retired. Adapters are registered under `assessment/adapters/<adapter-name>/` with a co-located `adapter.yaml` manifest. The adapter name is the directory key and the `adapter` frontmatter field. Authority weights live in `adapter.yaml`; per-assessment overrides in `consolidation.yaml: source_authority_overrides`.
 
 ### ~~Q-2 · Projection primitive~~ RESOLVED
 

@@ -110,7 +110,7 @@ reclustering:
   "embedding_version": "<embedding.name>@<embedding.revision>",
   "assignments": [
     {
-      "source_type": "jira",
+      "adapter": "jira",
       "source_id": "PROJ-123",
       "projection": "jira:bulk_download",
       "projection_output": "PROJ-123.md",
@@ -121,7 +121,7 @@ reclustering:
     }
   ],
   "unassigned": [
-    {"source_type": "transcript", "source_id": "kickoff-2026-03-14",
+    {"adapter": "transcript", "source_id": "kickoff-2026-03-14",
      "projection": "transcript:speaker_grouped",
      "projection_output": "kickoff-2026-03-14.md",
      "best_similarity": 0.42, "reason": "below_threshold_no_orphan_domain"}

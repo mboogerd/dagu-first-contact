@@ -21,6 +21,7 @@ The following high-priority structural work was completed in a single consolidat
 - **Domain-hierarchy NEEDS CLARIFICATION** — resolved: proposal → review → apply workflow (new `hierarchy:propose` / `hierarchy:apply` commands).
 - **Report Health section NEEDS CLARIFICATION** — resolved: keep as separate section.
 - **Embedding sidecar collision risk** — resolved: collision prevention is guaranteed by projection contract's deterministic-naming rule.
+- **Q-1** · Adapter as directory key — resolved: adapter registry with co-located config ([D-51]). `source_type` enum retired; `adapter` is now the frontmatter field and directory key.
 
 ---
 
@@ -30,7 +31,6 @@ The following high-priority structural work was completed in a single consolidat
 
 Items deferred during the open-issues pass that still need resolution at some point:
 
-- **Q-1** Adapter as directory key (vs. enum). Partly subsumed by the projection-registry pattern in D-49, but not fully resolved.
 - **Q-4** Pure embedding-based domain assignment is not trustworthy enough — rework as candidate-reduction → LLM final assignment. Real design effort; deferred until first real run gives empirical signal.
 - **Q-5** Taxonomy discovery should emit domain assignment hints. Couples with Q-4.
 - **Q-7** Conflict feedback loop with the client (client answers as evidence; conflict lifecycle states; `conflict:resolve` operation). Comes after the basic pipeline is producing review queues.

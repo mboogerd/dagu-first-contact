@@ -40,7 +40,7 @@ When only one prefix is in use (the common case), the prefix suffix is omitted a
 
 ```json
 {
-  "source_type": "jira",
+  "adapter": "jira",
   "source_id": "PROJ-123",
   "projection": "jira:bulk_download",
   "projection_version": "<hash>",

@@ -155,13 +155,13 @@ cache/              ← LLM call cache
 config/             ← all configuration files
 ```
 
-### Source identity
+### Adapter as directory key
 
-Source identity is always a top-level folder under `evidence/`, `projections/`, `extracted/`:
+The adapter name (e.g., `git`, `jira`, `rfp`) is the top-level folder under `evidence/`, `projections/`, and `extracted/`. It is NOT a hardcoded enum — it's the adapter's registered name, which is also its directory name. See [D-51](decisions/0051-adapter-registry.md).
 
-- `evidence/<source>/`
-- `projections/<source>/<source-id>/`
-- `extracted/<source>/<source-id>/`
+- `evidence/<adapter>/`
+- `projections/<adapter>/<source-id>/`
+- `extracted/<adapter>/<source-id>/`
 
 Examples: `evidence/jira/`, `projections/jira/PROJ-123/`, `extracted/git/payments-service/`.
 
@@ -170,7 +170,7 @@ Examples: `evidence/jira/`, `projections/jira/PROJ-123/`, `extracted/git/payment
 A projection MAY create subfolders for its outputs. When it does, the subfolder is named `<projection>/` under the source-id folder:
 
 ```
-projections/<source>/<source-id>/<projection>/
+projections/<adapter>/<source-id>/<projection>/
 ├── <output>.md
 ├── <output>.embedding.json
 └── <intermediates>
@@ -181,7 +181,7 @@ projections/<source>/<source-id>/<projection>/
 Filenames within scope folders follow the pattern:
 
 ```
-<source>__<source-id>__<projection>[__<output-id>].<role>.<ext>
+<adapter>__<source-id>__<projection>[__<output-id>].<role>.<ext>
 ```
 
 The `__` (double underscore) separator is chosen so Obsidian wikilinks can use the filename directly without path disambiguation.

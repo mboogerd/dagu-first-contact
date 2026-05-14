@@ -14,7 +14,7 @@ Runs **bottom-up** through the domain tree. At each domain, seven phases execute
 
 ### 4a · Gather
 
-- For each domain, collect all `Requirement` records from member docs (via `extracted/<source_type>/<source_id>/requirements.json`).
+- For each domain, collect all `Requirement` records from member docs (via `extracted/<adapter>/<source_id>/requirements.json`).
 - Collect already-consolidated requirements from child domains (each propagates upward as a single record carrying its own `sources` and `conflicts`).
 
 ### 4b · Group (two-stage)
@@ -161,12 +161,10 @@ grouping:
   llm_verification: true           # set false to use pure embedding grouping (escape hatch)
   min_group_size: 1                # singletons (one source) are valid groups
 
-source_authority:
-  rfp: 1.0
-  spreadsheet: 0.7
-  jira: 0.6
-  git: 0.8
-  transcript: 0.4
+# source_authority weights are read from each adapter's adapter.yaml manifest
+# (see ingest spec). Override here only if a per-assessment adjustment is needed.
+source_authority_overrides: {}
+  # Example: jira: 0.8   ← overrides the adapter's default of 0.6
 
 reconciliation:
   rules:

@@ -51,6 +51,7 @@ Decisions dropped or deferred for v1 are not present here. Their numbers are pre
 | [D-48](0048-report-sections-independent-and-toggleable.md) | Independent toggleable report sections | report |
 | [D-49](0049-projection-primitive.md) | Projection primitive | ingest |
 | [D-50](0050-source-declared-intent.md) | Source-declared intent | ingest, consolidate |
+| [D-51](0051-adapter-registry.md) | Adapter registry with co-located config | ingest |
 
 ## Numbers retained but decisions dropped/deferred in v1
 
@@ -59,4 +60,4 @@ Decisions dropped or deferred for v1 are not present here. Their numbers are pre
 | D-6 | Per-extractor eval set | Deferred — eval framework not in v1. See [open-questions.md](../open-questions.md). |
 | D-29..D-33 | Eval framework details | Deferred. |
 | D-39 | Calibration loop | Deferred. |
-| D-51..D-52 | Cluster archival semantics | Deferred — not needed in PoC timeframe. D-49 and D-50 were reassigned. |
+| D-52 | Cluster archival semantics | Deferred — not needed in PoC timeframe. D-49, D-50, D-51 were reassigned. |
