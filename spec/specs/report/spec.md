@@ -114,7 +114,7 @@ Compute freshness signals against `config/report.yaml: freshness`:
 - **Taxonomy freshness.** If `taxonomy.locked.yaml` was locked via `--from-starting`, emit `taxonomy_from_starting` warning.
 - **Model pin drift.** Detect when any model id in `models.yaml` has a newer pinnable version available (best-effort; provider-dependent; non-blocking).
 
-[NEEDS CLARIFICATION: In v0, this section also covered eval freshness and calibration staleness. Both are deferred in v1. The Health section in v1 is consequently small. Confirm whether it should still render as a separate section or fold into Provenance until eval/calibration return.]
+Health stays as a separate section even though it only has two signals in v1. It is the natural home for future freshness signals (eval freshness, calibration staleness) when those features return, and keeping it separate avoids restructuring later.
 
 Warnings are written to frontmatter (`freshness_warnings`) AND surfaced in this section in human-readable form.
 

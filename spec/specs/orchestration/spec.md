@@ -11,18 +11,20 @@ Sequence stages with incremental, content-addressed execution.
 ## Subcommands
 
 ```bash
-python -m assessment ingest             # idempotent; fetches evidence + runs projections
-python -m assessment taxonomy:discover  # runs Stage 1.5 discovery loop; writes taxonomy/proposal.md
-python -m assessment taxonomy:lock      # reads (possibly edited) proposal; writes config/taxonomy.locked.yaml
-python -m assessment extract            # refuses to run without locked taxonomy
-python -m assessment embed              # refreshes stale embedding sidecars only; idempotent
-python -m assessment cluster            # phases 3a-3c in current re-clustering mode (default: incremental)
-python -m assessment cluster --full     # forces full re-cluster from scratch
-python -m assessment consolidate        # Stage 4 (bottom-up with cross-domain findings) + review queues
-python -m assessment report             # Stage 5.5: writes reports/<ISO_timestamp>.md
+python -m assessment ingest              # idempotent; fetches evidence + runs projections
+python -m assessment taxonomy:discover   # runs Stage 1.5 discovery loop; writes taxonomy/proposal.md
+python -m assessment taxonomy:lock       # reads (possibly edited) proposal; writes config/taxonomy.locked.yaml
+python -m assessment extract             # refuses to run without locked taxonomy
+python -m assessment embed               # refreshes stale embedding sidecars only; idempotent
+python -m assessment cluster             # phases 3a-3b in current re-clustering mode (default: incremental)
+python -m assessment cluster --full      # forces full re-cluster from scratch
+python -m assessment hierarchy:propose   # Stage 3c: writes domains/_hierarchy_proposal.md (experimental)
+python -m assessment hierarchy:apply     # reads (possibly edited) proposal; mutates _index.yaml
+python -m assessment consolidate         # Stage 4 (bottom-up with cross-domain findings) + review queues
+python -m assessment report              # Stage 5.5: writes reports/<ISO_timestamp>.md
 ```
 
-Discovery and lock are deliberately separate commands. `discover` is reproducible (caches its LLM calls); `lock` is a human-gated step.
+Discovery/lock and hierarchy propose/apply are deliberately separate commands. `discover` and `hierarchy:propose` are reproducible (they cache their LLM calls); `lock` and `hierarchy:apply` are human-gated steps.
 
 Cross-domain findings are part of the `consolidate` command (phase 4f of the bottom-up traversal). There is no separate cross-domain subcommand or opt-out flag.
 

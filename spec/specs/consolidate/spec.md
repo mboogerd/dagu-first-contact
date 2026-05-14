@@ -99,8 +99,26 @@ Clamped to [0, 1]. Signals and weights are recorded in the `Confidence` object f
 
 **Review priority (deterministic).**
 
-- Computed from the formula in `config/consolidation.yaml: review_priority.formula`. Default: `criticality_numeric * (1 - confidence.score)` + optional `change_plan_boost`.
-- The combination favors items that are both critical AND uncertain — exactly the cases worth a human's time.
+Within-domain priority is computed per item:
+
+```
+base = criticality_numeric * (1 - confidence.score)
+     + change_plan_boost                         (if change_plan_flag)
+     + cross_domain_boost                        (if cross-domain finding participant)
+```
+
+At **top-level queue rendering** (when parent domains roll up children), two additional deterministic factors are applied:
+
+- **Domain centrality.** A per-domain scalar derived from: member count (log-scaled), inbound-interaction count (from extracted interactions), and an optional explicit consultant weight in `config/consolidation.yaml: domain_centrality_overrides`. Combined as `w_size * log(members) + w_interactions * log(1 + inbound) + w_override * override`. Items in high-centrality domains float up; items in peripheral domains sink.
+- **Resolution uncertainty.** A per-item scalar derived from which reconciliation rule fired: `manual_override` → 0.0, `source_authority` with a clear winner → 0.1, `source_authority` with tied weights → 0.5, `recency` → 0.3, `llm_judgment` → 0.7. Higher uncertainty means the auto-resolution is less trustworthy and a human should verify.
+
+Top-level formula:
+
+```
+review_priority = base * domain_centrality * (1 + resolution_uncertainty * w_uncertainty)
+```
+
+The combination favors items that are critical, uncertain, in central domains, and resolved by weak rules — exactly the cases worth a human's time. Within-domain ordering ignores centrality (it's the same for all items in a domain).
 
 ### 4f · Cross-domain findings (at non-leaf domains)
 
@@ -174,9 +192,23 @@ criticality:
     minor: 0.15
 
 review_priority:
-  formula: "criticality_numeric * (1 - confidence)"
   change_plan_boost: 0.0
   cross_domain_boost: 0.20
+  domain_centrality:
+    w_size: 0.4
+    w_interactions: 0.4
+    w_override: 0.2
+  resolution_uncertainty:
+    manual_override: 0.0
+    source_authority_clear: 0.1
+    source_authority_tied: 0.5
+    recency: 0.3
+    llm_judgment: 0.7
+    w_uncertainty: 0.3       # how much resolution uncertainty influences final priority
+
+domain_centrality_overrides:
+  # Optional per-domain overrides. Values are unitless; only relative magnitude matters.
+  # Example: payments-service: 1.5
 
 cross_domain:
   embedding_threshold: 0.85

@@ -60,20 +60,9 @@ This is also where reviewer-flagged concerns and the consultant's larger-scale i
 
 ## Conflict handling
 
-### Q-6 · Top-N priority should include subsystem centrality and resolution uncertainty
+### ~~Q-6 · Top-N priority should include subsystem centrality and resolution uncertainty~~ RESOLVED
 
-**Why it matters.** The current `review_priority` formula is per-item: `criticality_numeric * (1 - confidence)`. At top-level rendering it doesn't account for how central the domain (subsystem) is to the whole system, nor for how uncertain the auto-resolution of a conflict was.
-
-**Direction.** Extend the formula at top-level rendering with two factors:
-
-- **Subsystem centrality.** A per-domain scalar derived from domain size, inbound-interaction count, and (optionally) explicit consultant marking. Computed deterministically.
-- **Resolution uncertainty.** A scalar derived from which reconciliation rule fired and what its evidence looked like. `manual_override` → 0. `source_authority` with tied weights → high. `llm_judgment` → high.
-
-Within-domain ordering keeps the simple formula.
-
-**What would resolve it.** A change folder that adds these two factors and updates the report rendering. Cheap to implement; can land any time after the consolidate spec is in code.
-
-**Deferred for.** Phase 1 ships with the simple formula; the consultant accepts the noise.
+**Resolved.** Domain centrality and resolution uncertainty are now part of the top-level review priority formula in the [consolidate spec](specs/consolidate/spec.md). Centrality is derived from member count + inbound interactions + optional consultant overrides. Resolution uncertainty is derived from which reconciliation rule fired. Both are deterministic and configurable via `config/consolidation.yaml`.
 
 ### Q-7 · Conflict feedback loop with the client
 

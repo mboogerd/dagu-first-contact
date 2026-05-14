@@ -92,6 +92,10 @@ A projection output may need embeddings with different prefixes for different co
 
 The sidecar naming convention handles this: the default sidecar (`<output>.embedding.json`) uses the `clustering: ` prefix; alternates use `<output>.embedding.<prefix>.json`.
 
+### Collision prevention for multi-output projections
+
+When a projection produces multiple output files (e.g., `rfp:section_split` producing `01-introduction.md`, `02-payments.md`, etc.), each output gets its own sidecar named after its output file. Because output filenames within a projection folder are required to be unique (per the projection contract's deterministic-naming rule), sidecar filenames are automatically unique within the same folder. No additional collision-prevention mechanism is needed — the uniqueness guarantee flows from the projection contract.
+
 ## Related decisions
 
 - [D-24](../../decisions/0024-local-embedding-model-pinned-and-vendored.md) pinned local model.
