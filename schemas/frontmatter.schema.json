@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/schemas/frontmatter.schema.json",
+  "title": "Generated Artifact Frontmatter",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "artifact_type",
+    "generated_by",
+    "generated_at",
+    "inputs",
+    "input_hashes"
+  ],
+  "properties": {
+    "artifact_type": {
+      "type": "string",
+      "enum": [
+        "system-summary",
+        "subdomain-summary",
+        "domain-summary",
+        "requirement-extract",
+        "requirements-mapping",
+        "requirements-status",
+        "conflicts",
+        "resolutions",
+        "roadmap",
+        "rfp-normalized",
+        "jira-normalized",
+        "requirements-normalized",
+        "interactions",
+        "suggested-boundaries",
+        "import-manifest",
+        "final-report"
+      ]
+    },
+    "generated_by": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "input_hashes": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "confidence": {
+      "type": "string",
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        "unknown"
+      ]
+    }
+  }
+}
