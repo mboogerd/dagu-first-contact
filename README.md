@@ -69,6 +69,19 @@ confidence: medium
 
 `artifact_type`, `generated_by`, `generated_at`, `inputs`, and `input_hashes` are required by `schemas/frontmatter.schema.json`. `confidence` is optional for deterministic artifacts and may be `high`, `medium`, `low`, or `unknown`.
 
+## Artifact Validation
+
+Validate structured inputs and generated artifacts with:
+
+```bash
+python -m ops.validate_artifacts validate references
+python -m ops.validate_artifacts validate all
+python -m ops.validate_artifacts validate frontmatter "domain/systems/*.md"
+python -m ops.validate_artifacts --json validate all
+```
+
+`validate all` runs every registered validator. Validators are discovered from `ops/validators/`; each module registers itself with `register_validator(...)`. To add a later artifact type, add its JSON Schema under `schemas/` and add a validator module under `ops/validators/` that implements `run(repo_root)`. No edits to `ops/validate_artifacts.py` are required for the new validator to appear in `--help` and participate in `validate all`.
+
 ## Verification
 
 The WP-01 scaffold can be checked with:
