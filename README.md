@@ -50,6 +50,25 @@ Later work packages read these variables when their related integrations are ena
 - `JIRA_API_TOKEN`: Jira API token paired with `JIRA_EMAIL`.
 - `GOOGLE_APPLICATION_CREDENTIALS`: Path to a Google service account credentials JSON file for Google Sheets export.
 
+## Artifact Frontmatter
+
+Generated artifacts use YAML frontmatter between `---` fences so later workflow steps can trace source inputs and recompute safely. Use `ops._artifact.write_artifact` to write artifacts and `ops._artifact.read_frontmatter` to read them; path values should be resolved relative to the repository root before writing.
+
+```yaml
+---
+artifact_type: system-summary
+generated_by: 20-domain-analysis
+generated_at: 2026-05-14T12:00:00Z
+inputs:
+  - import/git/billing-service
+input_hashes:
+  import/git/billing-service: abc123
+confidence: medium
+---
+```
+
+`artifact_type`, `generated_by`, `generated_at`, `inputs`, and `input_hashes` are required by `schemas/frontmatter.schema.json`. `confidence` is optional for deterministic artifacts and may be `high`, `medium`, `low`, or `unknown`.
+
 ## Verification
 
 The WP-01 scaffold can be checked with:
