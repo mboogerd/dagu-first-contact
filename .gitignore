@@ -1,0 +1,61 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Python and virtualenv artifacts
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# OS and editor noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Temporary files
+*.tmp
+*.bak
+*.log
+
+# Large local fixtures
+fixtures/large/
+*.fixture
+
+# Runtime state, while keeping the scaffold visible
+.state/*
+!.state/hashes/
+!.state/runs/
+!.state/hashes/.gitkeep
+!.state/runs/.gitkeep
+
+# Imported external data, while keeping the scaffold visible
+import/*
+!import/git/
+!import/spreadsheet/
+!import/pdf/
+!import/jira/
+!import/git/.gitkeep
+!import/spreadsheet/.gitkeep
+!import/pdf/.gitkeep
+!import/jira/.gitkeep
+
+# Generated converter outputs, while keeping the scaffold visible
+generated/spreadsheet-converters/*
+!generated/spreadsheet-converters/.gitkeep
+
+# Human-supplied source artifacts are local by default
+sources/spreadsheets/*
+!sources/spreadsheets/README.md
+sources/rfp/*
+!sources/rfp/README.md
+
+# Final outputs, while keeping the scaffold visible
+output/*
+!output/.gitkeep
