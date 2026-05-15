@@ -1,0 +1,38 @@
+# Example external source registry for the project intelligence pipeline.
+# Import scripts interpret this file; Dagu workflows should treat it as input.
+
+git:
+  - name: customer-api
+    url: git@github.com:placeholder-org/customer-api.git
+    branch: main
+  - name: billing-service
+    url: git@github.com:placeholder-org/billing-service.git
+    branch: main
+
+spreadsheets:
+  # Local Excel workbook.
+  - name: legacy-requirements
+    type: file
+    path: sources/spreadsheets/legacy-requirements.xlsx
+
+  # Local CSV export.
+  - name: support-request-export
+    type: file
+    path: sources/spreadsheets/support-request-export.csv
+
+  # Google Sheet exported by the spreadsheet importer.
+  - name: product-requirements
+    type: google
+    url: https://docs.google.com/spreadsheets/d/placeholder-sheet-id/edit
+    export: xlsx
+
+rfp:
+  - name: main-rfp
+    path: sources/rfp/main-rfp.pdf
+
+jira:
+  instance: https://placeholder-org.atlassian.net
+  projects:
+    - PLATFORM
+    - BILLING
+    - CUSTOMER
