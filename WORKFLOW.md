@@ -24,7 +24,7 @@ agent:
   max_concurrent_agents: 3
   max_turns: 20
 codex:
-  command: codex --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
+  command: codex --i-understand-that-this-will-be-running-without-the-usual-guardrails --config shell_environment_policy.inherit=all --config 'model="gpt-5.5"' --config model_reasoning_effort=medium app-server
   approval_policy: never
   thread_sandbox: danger-full-access
 ---
